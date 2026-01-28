@@ -1,71 +1,30 @@
-import streamlit as st
-import google.generativeai as genai
-from google.cloud import bigquery
-import pandas as pd
-import json
-import plotly.express as px
+# 3. 제미나이 페르소나 및 데이터 사전 정의 (강화된 버전)
+import datetime
 
-# 1. 페이지 설정 및 디자인
-st.set_page_config(page_title="SIDIZ AI Intelligence", page_icon="🪑", layout="wide")
-st.markdown("""
-    <style>
-    .main { background-color: #f5f5f5; }
-    .stChatMessage { border-radius: 15px; }
-    </style>
-    """, unsafe_allow_html=True)
+today = datetime.date.today().strftime('%Y%m%d')
+three_months_ago = (datetime.date.today() - datetime.timedelta(days=90)).strftime('%Y%m%d')
 
-# 2. 보안 설정 (Secrets)
-info = json.loads(st.secrets["gcp_service_account"]["json_key"])
-client = bigquery.Client.from_service_account_info(info)
-genai.configure(api_key=st.secrets["gemini"]["api_key"])
-
-# 3. 제미나이 페르소나 및 데이터 사전 정의 (핵심!)
 SYSTEM_PROMPT = f"""
-당신은 시디즈(SIDIZ)의 시니어 데이터 사이언티스트입니다. 
-당신은 루커스튜디오 보고서에 없는 깊이 있는 인사이트를 제공해야 합니다.
+당신은 시디즈(SIDIZ)의 시니어 데이터 사이언티스트입니다.
+사용자의 질문을 분석하여 Google BigQuery SQL을 생성하고 분석 결과를 설명하세요.
 
-[분석 가능한 데이터 범위]
-- 테이블: `{info['project_id']}.analytics_324424314.events_*`
-- 지표: 세션, 사용자, 구매, 회원가입, 정품등록, 제품 클릭 등
-- 특수 분석: 
-    1. 멀티 터치 기여 분석 (유입 경로 히스토리 추적)
-    2. 제품 간 교차 구매 분석 (T50 구매자가 뮤브도 보는지?)
-    3. 이탈 분석 (장바구니 담기 후 왜 결제를 안 하는지?)
+[데이터셋 정보]
+- 프로젝트 ID: `{info['project_id']}`
+- 데이터셋: `analytics_324424314`
+- 테이블: `events_*` (GA4 Sharded Table)
 
-[SQL 작성 규칙]
-- GA4 빅쿼리의 UNNEST 문법을 정확히 사용하세요.
-- 날짜 필터는 항상 _TABLE_SUFFIX를 활용해 효율적으로 짭니다.
-- 기여 분석 시 user_pseudo_id와 event_timestamp를 활용해 경로를 재구성하세요.
+[SQL 작성 필수 규칙 - 절대 준수]
+1. 날짜 필터링: 반드시 `_TABLE_SUFFIX`를 사용하세요.
+   - 오늘 날짜는 {today}입니다.
+   - 예: 최근 3개월 -> `_TABLE_SUFFIX BETWEEN '{three_months_ago}' AND '{today}'`
+2. 주단위(Weekly) 분석: `DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), WEEK)`를 사용하여 그룹화하세요.
+3. UNNEST 활용: `event_params`에서 값을 추출할 때 반드시 `UNNEST`를 정확히 사용하세요.
+4. 매출 계산: `event_name = 'purchase'`인 행에서 `(SELECT value.int_value OR value.double_value FROM UNNEST(event_params) WHERE key = 'value')`를 합산하세요.
+
+[응답 가이드]
+1. 생성한 SQL 쿼리를 먼저 보여주세요.
+2. 데이터를 요약하여 인사이트를 한글로 설명하세요.
 """
 
+# 모델 설정 유지
 model = genai.GenerativeModel('gemini-1.5-pro', system_instruction=SYSTEM_PROMPT)
-
-st.title("🪑 SIDIZ Data Intelligence Portal")
-st.sidebar.header("📌 분석 추천 질문")
-if st.sidebar.button("유튜브 유입자의 결제 기여도 분석"):
-    st.session_state.prompt = "유튜브(ig/social 등)로 처음 들어온 사용자들이 결제까지 가는 과정에서 거치는 경로들을 분석해줘."
-
-# 4. 채팅 루프
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-if prompt := st.chat_input("데이터에게 말을 걸어보세요..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant"):
-        with st.spinner("빅쿼리에서 고객 여정을 추적 중..."):
-            # 제미나이가 SQL 생성 및 분석
-            response = model.generate_content(prompt)
-            st.markdown(response.text)
-            
-            # (여기에 실제 SQL 실행 및 시각화 로직을 추가하여 차트를 띄울 수 있습니다)
-            # 예시로 데이터 프레임 구조만 보여줌
-            # st.plotly_chart(fig)
-
-    st.session_state.messages.append({"role": "assistant", "content": response.text})
