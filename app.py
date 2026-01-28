@@ -14,11 +14,13 @@ try:
     info = json.loads(st.secrets["gcp_service_account"]["json_key"])
     client = bigquery.Client.from_service_account_info(info)
     
-    # Gemini API 설정 (최신 모델명 적용)
+    # Gemini API 설정 (할당량이 넉넉한 Lite 모델로 변경)
     if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
         genai.configure(api_key=st.secrets["gemini"]["api_key"])
-        model = genai.GenerativeModel('models/gemini-2.0-flash')
-        st.sidebar.success("✅ Gemini 2.0 엔진 연결 완료", icon="🚀")
+        
+        # [모델 변경] 리스트 6번에 있던 Lite 모델 적용
+        model = genai.GenerativeModel('models/gemini-2.0-flash-lite')
+        st.sidebar.success("✅ Gemini 2.0 Lite 연결 완료", icon="⚡")
     else:
         st.sidebar.error("❌ API 키를 확인해주세요.", icon="🚨")
         st.stop()
@@ -34,6 +36,8 @@ try:
     - 데이터셋: `analytics_324424314`
     - 테이블: `events_*`
     - 오늘 날짜: {today}
+    
+    [규칙] 사용자의 질문에 대해 빅쿼리 SQL을 작성하고 결과를 한글로 설명하세요.
     """
 
 except Exception as e:
@@ -53,12 +57,10 @@ for message in st.session_state.messages:
 
 # 5. 사용자 입력 처리
 if prompt := st.chat_input("데이터에게 궁금한 점을 물어보세요..."):
-    # 사용자 메시지 표시
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 어시스턴트 답변 생성 (이 부분의 들여쓰기를 확인하세요!)
     with st.chat_message("assistant"):
         with st.spinner("분석 중..."):
             try:
@@ -66,10 +68,13 @@ if prompt := st.chat_input("데이터에게 궁금한 점을 물어보세요..."
                 full_query = f"{INSTRUCTION}\n\n사용자 질문: {prompt}"
                 response = model.generate_content(full_query)
                 
-                # 답변 출력 및 저장
                 answer = response.text
                 st.markdown(answer)
                 st.session_state.messages.append({"role": "assistant", "content": answer})
                 
             except Exception as e:
-                st.error(f"분석 중 오류 발생: {e}", icon="🚨")
+                # 할당량 에러 시 재시도 안내 강화
+                if "429" in str(e):
+                    st.error("현재 요청이 너무 많습니다. 1분만 기다렸다가 다시 시도해 주세요.", icon="⏳")
+                else:
+                    st.error(f"분석 중 오류 발생: {e}", icon="🚨")
