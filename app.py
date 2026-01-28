@@ -14,7 +14,7 @@ try:
     info = json.loads(st.secrets["gcp_service_account"]["json_key"])
     client = bigquery.Client.from_service_account_info(info)
     
-    # API 키 확인 및 설정
+    # Gemini API 설정
     if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
         genai.configure(api_key=st.secrets["gemini"]["api_key"])
         st.sidebar.success("✅ Gemini API 연결 준비 완료")
@@ -26,7 +26,7 @@ try:
     today = datetime.date.today().strftime('%Y%m%d')
     three_months_ago = (datetime.date.today() - datetime.timedelta(days=90)).strftime('%Y%m%d')
 
-    # 3. 제미나이 페르소나 설정
+    # 3. 제미나이 페르소나 설정 (시스템 프롬프트)
     SYSTEM_PROMPT = f"""
     당신은 시디즈(SIDIZ)의 시니어 데이터 사이언티스트입니다.
     사용자의 질문을 분석하여 Google BigQuery SQL을 생성하고 분석 결과를 설명하세요.
@@ -42,10 +42,11 @@ try:
        - 예: `_TABLE_SUFFIX BETWEEN '{three_months_ago}' AND '{today}'`
     2. 주단위(Weekly) 분석: `DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), WEEK)`를 사용하세요.
     3. 매출: 'purchase' 이벤트의 'value' 파라미터를 합산하세요.
+    4. 결과는 항상 SQL 쿼리와 함께 한글 설명을 제공하세요.
     """
 
-    # 가장 빠르고 호환성이 좋은 flash 모델로 교체합니다.
-model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=SYSTEM_PROMPT)
+    # 모델 설정 (가장 안정적인 flash 모델 사용)
+    model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=SYSTEM_PROMPT)
 
 except Exception as e:
     st.error(f"설정 중 오류가 발생했습니다: {e}")
@@ -57,20 +58,23 @@ st.title("🪑 SIDIZ Data Intelligence Portal")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# 기존 대화 출력
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+# 사용자 입력 처리
 if prompt := st.chat_input("데이터에게 말을 걸어보세요..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("빅쿼리 분석 엔진 가동 중..."):
+        with st.spinner("빅쿼리에서 데이터를 분석 중..."):
             try:
+                # 제미나이 답변 생성
                 response = model.generate_content(prompt)
                 st.markdown(response.text)
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
             except Exception as e:
-                st.error(f"분석 중 오류가 발생했습니다. API 키나 쿼리 문법을 확인해주세요.\n오류내용: {e}")
+                st.error(f"분석 중 오류가 발생했습니다. 오류내용: {e}")
