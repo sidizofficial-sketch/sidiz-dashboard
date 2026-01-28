@@ -26,27 +26,25 @@ try:
     today = datetime.date.today().strftime('%Y%m%d')
     three_months_ago = (datetime.date.today() - datetime.timedelta(days=90)).strftime('%Y%m%d')
 
-    # 3. 제미나이 페르소나 설정 (시스템 프롬프트)
-    SYSTEM_PROMPT = f"""
+    # 3. 제미나이 지침 정의 (합치기용)
+    INSTRUCTION = f"""
     당신은 시디즈(SIDIZ)의 시니어 데이터 사이언티스트입니다.
-    사용자의 질문을 분석하여 Google BigQuery SQL을 생성하고 분석 결과를 설명하세요.
+    아래 규칙을 바탕으로 SQL을 생성하고 분석 결과를 설명하세요.
 
     [데이터셋 정보]
     - 프로젝트 ID: `{info['project_id']}`
     - 데이터셋: `analytics_324424314`
     - 테이블: `events_*`
+    - 오늘 날짜: {today} (3개월 전: {three_months_ago})
 
-    [SQL 작성 필수 규칙]
-    1. 날짜 필터링: 반드시 `_TABLE_SUFFIX`를 사용하세요. 
-       - 오늘: {today}, 3개월 전: {three_months_ago}
-       - 예: `_TABLE_SUFFIX BETWEEN '{three_months_ago}' AND '{today}'`
-    2. 주단위(Weekly) 분석: `DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), WEEK)`를 사용하세요.
-    3. 매출: 'purchase' 이벤트의 'value' 파라미터를 합산하세요.
-    4. 결과는 항상 SQL 쿼리와 함께 한글 설명을 제공하세요.
+    [SQL 규칙]
+    1. 날짜 필터링: 반드시 `_TABLE_SUFFIX BETWEEN '{three_months_ago}' AND '{today}'` 형태를 사용하세요.
+    2. 주단위 분석: `DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), WEEK)`를 사용하세요.
+    3. 결과는 반드시 SQL 쿼리와 함께 한글 분석 내용을 포함하세요.
     """
 
-    # 모델명을 'models/gemini-1.5-flash-latest'로 명확하게 지정합니다.
-    model = genai.GenerativeModel('models/gemini-1.5-flash-latest', system_instruction=SYSTEM_PROMPT)
+    # 가장 호환성이 높은 모델 선언
+    model = genai.GenerativeModel('gemini-pro')
 
 except Exception as e:
     st.error(f"설정 중 오류가 발생했습니다: {e}")
@@ -58,22 +56,24 @@ st.title("🪑 SIDIZ Data Intelligence Portal")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 기존 대화 출력
+# 대화 내용 출력
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# 사용자 입력 처리
+# 사용자 입력 및 분석 로직
 if prompt := st.chat_input("데이터에게 말을 걸어보세요..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("빅쿼리에서 데이터를 분석 중..."):
+        with st.spinner("빅쿼리 분석 엔진 가동 중..."):
             try:
-                # 제미나이 답변 생성
-                response = model.generate_content(prompt)
+                # [핵심] 지침과 질문을 합쳐서 전달 (404 에러 방지용)
+                combined_prompt = f"{INSTRUCTION}\n\n사용자 질문: {prompt}"
+                response = model.generate_content(combined_prompt)
+                
                 st.markdown(response.text)
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
             except Exception as e:
