@@ -1,74 +1,71 @@
 import streamlit as st
+import google.generativeai as genai
+from google.cloud import bigquery
 import pandas as pd
+import json
 import plotly.express as px
 
-# 1. 페이지 설정
-st.set_page_config(page_title="SIDIZ 데이터 분석 대시보드", layout="wide")
+# 1. 페이지 설정 및 디자인
+st.set_page_config(page_title="SIDIZ AI Intelligence", page_icon="🪑", layout="wide")
+st.markdown("""
+    <style>
+    .main { background-color: #f5f5f5; }
+    .stChatMessage { border-radius: 15px; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# 2. 구글 시트 주소 설정 (가장 안정적인 CSV 추출 방식)
-# 링크 뒤의 /edit... 부분을 /export?format=csv로 강제 치환합니다.
-sheet_url = "https://docs.google.com/spreadsheets/d/162kRSBh40uJ5DEe_6gOo6V9lQy7hRURqSigDoDrQQfg/export?format=csv"
+# 2. 보안 설정 (Secrets)
+info = json.loads(st.secrets["gcp_service_account"]["json_key"])
+client = bigquery.Client.from_service_account_info(info)
+genai.configure(api_key=st.secrets["gemini"]["api_key"])
 
-@st.cache_data(ttl=60)
-def load_data(url):
-    # 주소에서 직접 읽어오기
-    df = pd.read_csv(url)
-    return df
+# 3. 제미나이 페르소나 및 데이터 사전 정의 (핵심!)
+SYSTEM_PROMPT = f"""
+당신은 시디즈(SIDIZ)의 시니어 데이터 사이언티스트입니다. 
+당신은 루커스튜디오 보고서에 없는 깊이 있는 인사이트를 제공해야 합니다.
 
-st.title("📊 SIDIZ 실시간 데이터 대시보드")
+[분석 가능한 데이터 범위]
+- 테이블: `{info['project_id']}.analytics_324424314.events_*`
+- 지표: 세션, 사용자, 구매, 회원가입, 정품등록, 제품 클릭 등
+- 특수 분석: 
+    1. 멀티 터치 기여 분석 (유입 경로 히스토리 추적)
+    2. 제품 간 교차 구매 분석 (T50 구매자가 뮤브도 보는지?)
+    3. 이탈 분석 (장바구니 담기 후 왜 결제를 안 하는지?)
 
-try:
-    df = load_data(sheet_url)
-    
-    # 데이터가 제대로 로드되었는지 상단에 살짝 표시
-    st.success("✅ 시트 연결 성공!")
-    
-    # 사이드바 필터
-    st.sidebar.header("🔍 분석 필터")
-    
-    # 실제 시트의 컬럼명을 확인하기 위한 로직
-    cols = df.columns.tolist()
-    
-    # 만약 시트에 item_name이라는 컬럼이 있다면
-    if 'item_name' in df:
-        product_list = sorted(df['item_name'].dropna().unique().tolist())
-        target_product = st.sidebar.selectbox("분석 대상 제품명", product_list)
-        
-        filtered_df = df[df['item_name'] == target_product]
-        
-        # 지표 출력
-        col1, col2, col3 = st.columns(3)
-        col1.metric("총 세션", f"{filtered_df.get('sessions', pd.Series([0])).sum():,}")
-        col2.metric("활성 사용자", f"{filtered_df.get('active_users', pd.Series([0])).sum():,}")
-        col3.metric("전환수", f"{filtered_df.get('conversions', pd.Series([0])).sum():,}")
-        
-        st.divider()
-        st.subheader(f"📌 {target_product} 상세 데이터")
-        st.write(filtered_df)
-    else:
-        st.warning("시트에서 'item_name' 컬럼을 찾을 수 없습니다. 컬럼명을 확인해주세요.")
-        st.write("현재 시트의 컬럼들:", cols)
+[SQL 작성 규칙]
+- GA4 빅쿼리의 UNNEST 문법을 정확히 사용하세요.
+- 날짜 필터는 항상 _TABLE_SUFFIX를 활용해 효율적으로 짭니다.
+- 기여 분석 시 user_pseudo_id와 event_timestamp를 활용해 경로를 재구성하세요.
+"""
 
-except Exception as e:
-    st.error(f"❌ 데이터를 불러올 수 없습니다.")
-    st.info("원인: 구글 시트의 [공유] 설정이 '링크가 있는 모든 사용자'에게 '뷰어' 권한으로 열려있는지 확인해주세요.")
-    st.write(f"상세 에러 내용: {e}")
+model = genai.GenerativeModel('gemini-1.5-pro', system_instruction=SYSTEM_PROMPT)
 
-# 제품명 대신 event_name을 사용하는 로직으로 변경
-if 'event_name' in df.columns:
-    event_list = sorted(df['event_name'].dropna().unique().tolist())
-    target_event = st.sidebar.selectbox("분석할 이벤트 선택", event_list)
-    
-    filtered_df = df[df['event_name'] == target_event]
-    
-    col1, col2 = st.columns(2)
-    col1.metric("이벤트 총 횟수", f"{filtered_df['event_count'].sum():,}")
-    col2.metric("활성 사용자", f"{filtered_df['active_users'].sum():,}")
-    
-    st.divider()
-    st.subheader(f"📅 {target_event} 시계열 추이")
-    
-    # 날짜별 차트
-    if 'date' in filtered_df.columns:
-        line_fig = px.line(filtered_df.sort_values('date'), x='date', y='event_count', title="날짜별 발생 건수")
-        st.plotly_chart(line_fig, use_container_width=True)
+st.title("🪑 SIDIZ Data Intelligence Portal")
+st.sidebar.header("📌 분석 추천 질문")
+if st.sidebar.button("유튜브 유입자의 결제 기여도 분석"):
+    st.session_state.prompt = "유튜브(ig/social 등)로 처음 들어온 사용자들이 결제까지 가는 과정에서 거치는 경로들을 분석해줘."
+
+# 4. 채팅 루프
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+if prompt := st.chat_input("데이터에게 말을 걸어보세요..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("빅쿼리에서 고객 여정을 추적 중..."):
+            # 제미나이가 SQL 생성 및 분석
+            response = model.generate_content(prompt)
+            st.markdown(response.text)
+            
+            # (여기에 실제 SQL 실행 및 시각화 로직을 추가하여 차트를 띄울 수 있습니다)
+            # 예시로 데이터 프레임 구조만 보여줌
+            # st.plotly_chart(fig)
+
+    st.session_state.messages.append({"role": "assistant", "content": response.text})
