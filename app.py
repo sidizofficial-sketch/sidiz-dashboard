@@ -53,3 +53,22 @@ except Exception as e:
     st.error(f"❌ 데이터를 불러올 수 없습니다.")
     st.info("원인: 구글 시트의 [공유] 설정이 '링크가 있는 모든 사용자'에게 '뷰어' 권한으로 열려있는지 확인해주세요.")
     st.write(f"상세 에러 내용: {e}")
+
+# 제품명 대신 event_name을 사용하는 로직으로 변경
+if 'event_name' in df.columns:
+    event_list = sorted(df['event_name'].dropna().unique().tolist())
+    target_event = st.sidebar.selectbox("분석할 이벤트 선택", event_list)
+    
+    filtered_df = df[df['event_name'] == target_event]
+    
+    col1, col2 = st.columns(2)
+    col1.metric("이벤트 총 횟수", f"{filtered_df['event_count'].sum():,}")
+    col2.metric("활성 사용자", f"{filtered_df['active_users'].sum():,}")
+    
+    st.divider()
+    st.subheader(f"📅 {target_event} 시계열 추이")
+    
+    # 날짜별 차트
+    if 'date' in filtered_df.columns:
+        line_fig = px.line(filtered_df.sort_values('date'), x='date', y='event_count', title="날짜별 발생 건수")
+        st.plotly_chart(line_fig, use_container_width=True)
