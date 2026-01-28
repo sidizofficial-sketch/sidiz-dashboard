@@ -81,3 +81,16 @@ else:
 # 6. 하단 인사이트 (Gemini API 연동 가능 구역)
 st.divider()
 st.info("💡 **Tip:** 위 차트에서 비중이 가장 높은 채널의 상세 랜딩 페이지 이탈률을 점검해보세요.")
+
+# 기존 SHEET_ID 부분을 아래와 같이 수정해보세요
+SHEET_ID = "162kRSBh40uJ5DEe_6gOo6V9lQy7hRURqSigDoDrQQfg"
+# 헤더 정보를 명확히 가져오기 위해 링크를 살짝 변경합니다
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
+
+@st.cache_data(ttl=60) # 테스트 중에는 캐시 시간을 짧게(1분) 잡는 게 좋습니다
+def load_data():
+    # 데이터가 비어있는지 확인하는 로직 추가
+    df = pd.read_csv(SHEET_URL)
+    if df.empty:
+        raise ValueError("시트에 데이터가 비어있거나 읽을 수 없습니다.")
+    return df
