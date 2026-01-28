@@ -44,7 +44,8 @@ try:
     3. 매출: 'purchase' 이벤트의 'value' 파라미터를 합산하세요.
     """
 
-    model = genai.GenerativeModel('gemini-1.5-pro', system_instruction=SYSTEM_PROMPT)
+    # 가장 빠르고 호환성이 좋은 flash 모델로 교체합니다.
+model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=SYSTEM_PROMPT)
 
 except Exception as e:
     st.error(f"설정 중 오류가 발생했습니다: {e}")
