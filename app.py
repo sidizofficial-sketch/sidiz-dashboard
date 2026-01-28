@@ -5,12 +5,6 @@ import pandas as pd
 import json
 import datetime
 
-# app.py 15라인 근처에 추가해 보세요
-if "gemini" in st.secrets:
-    st.sidebar.success("Gemini API 키 로드 완료!")
-else:
-    st.sidebar.error("Gemini API 키를 찾을 수 없습니다.")
-
 # 1. 페이지 설정
 st.set_page_config(page_title="SIDIZ AI Intelligence", page_icon="🪑", layout="wide")
 
@@ -20,7 +14,11 @@ try:
     info = json.loads(st.secrets["gcp_service_account"]["json_key"])
     client = bigquery.Client.from_service_account_info(info)
     genai.configure(api_key=st.secrets["gemini"]["api_key"])
-
+if "gemini" in st.secrets:
+    st.sidebar.success("Gemini API 키 로드 완료!")
+else:
+    st.sidebar.error("Gemini API 키를 찾을 수 없습니다.")
+    
     # 날짜 자동 계산
     today = datetime.date.today().strftime('%Y%m%d')
     three_months_ago = (datetime.date.today() - datetime.timedelta(days=90)).strftime('%Y%m%d')
