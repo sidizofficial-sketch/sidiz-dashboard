@@ -35,16 +35,15 @@ try:
     - 프로젝트 ID: `{info['project_id']}`
     - 데이터셋: `analytics_324424314`
     - 테이블: `events_*`
-    - 오늘 날짜: {today} (3개월 전: {three_months_ago})
+    - 오늘 날짜: {today}
 
     [SQL 규칙]
     1. 날짜 필터링: 반드시 `_TABLE_SUFFIX BETWEEN '{three_months_ago}' AND '{today}'` 형태를 사용하세요.
-    2. 주단위 분석: `DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), WEEK)`를 사용하세요.
-    3. 결과는 반드시 SQL 쿼리와 함께 한글 분석 내용을 포함하세요.
+    2. 결과는 반드시 SQL 쿼리와 함께 한글 분석 내용을 포함하세요.
     """
 
-    # 가장 호환성이 높은 모델 선언
-    model = genai.GenerativeModel('gemini-pro')
+    # [중요] 모델명을 풀네임으로 변경하여 404 에러 방지
+    model = genai.GenerativeModel('models/gemini-1.5-flash')
 
 except Exception as e:
     st.error(f"설정 중 오류가 발생했습니다: {e}")
@@ -56,12 +55,10 @@ st.title("🪑 SIDIZ Data Intelligence Portal")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 대화 내용 출력
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# 사용자 입력 및 분석 로직
 if prompt := st.chat_input("데이터에게 말을 걸어보세요..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -70,11 +67,12 @@ if prompt := st.chat_input("데이터에게 말을 걸어보세요..."):
     with st.chat_message("assistant"):
         with st.spinner("빅쿼리 분석 엔진 가동 중..."):
             try:
-                # [핵심] 지침과 질문을 합쳐서 전달 (404 에러 방지용)
+                # 합쳐진 프롬프트로 전달
                 combined_prompt = f"{INSTRUCTION}\n\n사용자 질문: {prompt}"
                 response = model.generate_content(combined_prompt)
                 
                 st.markdown(response.text)
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
             except Exception as e:
-                st.error(f"분석 중 오류가 발생했습니다. 오류내용: {e}")
+                # 여기서도 에러가 나면 모델 리스트를 출력해버립니다 (디버깅용)
+                st.error(f"모델 연결 오류. 다른 모델명을 시도해야 합니다: {e}")
