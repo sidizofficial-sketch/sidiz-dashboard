@@ -5,6 +5,12 @@ import pandas as pd
 import json
 import datetime
 
+# app.py 15라인 근처에 추가해 보세요
+if "gemini" in st.secrets:
+    st.sidebar.success("Gemini API 키 로드 완료!")
+else:
+    st.sidebar.error("Gemini API 키를 찾을 수 없습니다.")
+
 # 1. 페이지 설정
 st.set_page_config(page_title="SIDIZ AI Intelligence", page_icon="🪑", layout="wide")
 
