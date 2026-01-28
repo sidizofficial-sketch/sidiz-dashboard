@@ -45,8 +45,8 @@ try:
     4. 결과는 항상 SQL 쿼리와 함께 한글 설명을 제공하세요.
     """
 
-    # 모델 설정 (가장 안정적인 flash 모델 사용)
-    model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=SYSTEM_PROMPT)
+    # 'gemini-1.5-flash' 대신 가장 호환성이 좋은 'gemini-pro'를 사용합니다.
+    model = genai.GenerativeModel('gemini-pro', system_instruction=SYSTEM_PROMPT)
 
 except Exception as e:
     st.error(f"설정 중 오류가 발생했습니다: {e}")
