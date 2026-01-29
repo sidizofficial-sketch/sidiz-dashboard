@@ -212,21 +212,23 @@ def get_naver_keyword_stats(keywords):
     # 타임스탬프 생성 (밀리초)
     timestamp = str(round(time.time() * 1000))
     
+    # Secret Key 전처리 (공백 제거)
+    clean_secret_key = naver_ad_secret_key.strip()
+    
     # HMAC 서명 생성 (블로그 방식)
     message = timestamp + '.' + METHOD + '.' + API_PATH
     signature = hmac.new(
-        naver_ad_secret_key.encode('UTF-8'),
+        clean_secret_key.encode('UTF-8'),
         message.encode('UTF-8'),
         hashlib.sha256
     ).hexdigest()
     
-    # 헤더 (블로그 방식 순서)
+    # 헤더 (순서 중요!)
     headers = {
         'X-Timestamp': timestamp,
-        'X-API-KEY': naver_ad_api_key,
-        'X-Customer': str(naver_customer_id),
-        'X-Signature': signature,
-        'Content-Type': 'application/json'
+        'X-API-KEY': naver_ad_api_key.strip(),
+        'X-Customer': str(naver_customer_id).strip(),
+        'X-Signature': signature
     }
     
     # 파라미터 설정
@@ -234,6 +236,16 @@ def get_naver_keyword_stats(keywords):
         "hintKeywords": ",".join(keywords),
         "showDetail": "1"
     }
+    
+    # 디버깅: 요청 정보 출력 (민감 정보는 일부만)
+    import streamlit as st
+    with st.expander("🔍 API 요청 디버깅 정보"):
+        st.write("**요청 URL:**", BASE_URL + API_PATH)
+        st.write("**타임스탬프:**", timestamp)
+        st.write("**Customer ID:**", str(naver_customer_id))
+        st.write("**API Key (앞 10자):**", naver_ad_api_key[:10] + "...")
+        st.write("**서명 (앞 20자):**", signature[:20] + "...")
+        st.write("**검색 키워드:**", ",".join(keywords))
     
     try:
         url = BASE_URL + API_PATH
@@ -302,7 +314,8 @@ def get_naver_keyword_stats(keywords):
         elif response.status_code == 401:
             return None, "❌ 인증 실패: API 키 또는 Secret Key를 확인하세요."
         elif response.status_code == 403:
-            return None, "❌ 권한 오류: Customer ID를 확인하세요."
+            error_detail = f"Response: {response.text}"
+            return None, f"❌ 권한 오류: Customer ID 또는 API 권한을 확인하세요.\n{error_detail}"
         elif response.status_code == 400:
             return None, f"❌ 요청 오류: {response.text}"
         else:
