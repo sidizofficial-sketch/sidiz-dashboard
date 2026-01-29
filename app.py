@@ -109,28 +109,50 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
                     st.info(f"📅 분석 기간: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} ({days}일)")
                     period_detected = True
             
-            # 기본 기간 설정 (설정되지 않은 경우)
-            if 'start_date' not in st.session_state:
+            # 기간이 설정되지 않은 경우 (선택 안함 상태)
+            use_period_in_sql = 'start_date' in st.session_state
+            
+            # SQL에 사용할 임시 기간 설정
+            if not use_period_in_sql:
                 from datetime import datetime, timedelta
                 end_date = datetime.now()
                 start_date = end_date - timedelta(days=7)
                 
-                st.session_state['start_date'] = start_date.strftime('%Y%m%d')
-                st.session_state['end_date'] = end_date.strftime('%Y%m%d')
-                st.session_state['period_label'] = "최근 7일 (기본)"
+                temp_start = start_date.strftime('%Y%m%d')
+                temp_end = end_date.strftime('%Y%m%d')
                 
                 if not period_detected:
-                    st.info(f"📅 기본 분석 기간: 최근 7일 (사이드바에서 변경 가능)")
+                    st.info(f"💡 AI가 질문에 맞춰 기간을 자동 설정합니다")
+            else:
+                temp_start = st.session_state['start_date']
+                temp_end = st.session_state['end_date']
+                if not period_detected:
+                    st.info(f"📅 설정된 분석 기간: {st.session_state['period_label']}")
             
             with st.spinner("AI 엔진 분석 중..."):
-                # 더 명확한 프롬프트로 SQL 생성 강제 (날짜 조건 포함)
+                # 프롬프트 생성 (기간 설정 여부에 따라 다르게)
+                if use_period_in_sql:
+                    # 사용자가 기간을 명시적으로 선택한 경우
+                    date_instruction = f"""
+중요: WHERE 절에 다음 날짜 조건을 반드시 포함하세요:
+WHERE _TABLE_SUFFIX BETWEEN '{temp_start}' AND '{temp_end}'
+"""
+                else:
+                    # 선택 안함 - AI가 자유롭게 판단
+                    date_instruction = f"""
+날짜 필터링:
+- 사용자가 "최근 N일" 같은 키워드를 사용하면 해당 기간 사용
+- 그 외에는 질문 맥락에 맞는 적절한 기간 사용
+- 기본 예시: WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+- 또는: WHERE _TABLE_SUFFIX BETWEEN '{temp_start}' AND '{temp_end}'
+"""
+                
                 enhanced_prompt = f"""
 {INSTRUCTION}
 
 사용자 질문: {prompt}
 
-중요: WHERE 절에 다음 날짜 조건을 반드시 포함하세요:
-WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
+{date_instruction}
 
 반드시 다음 형식으로 답변하세요:
 
@@ -139,7 +161,7 @@ WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_
 3. 마지막으로 예상 결과 해석
 
 예시:
-{st.session_state.get('period_label', '최근 7일')} 매출을 분석하겠습니다.
+매출을 분석하겠습니다.
 
 ```sql
 SELECT
@@ -147,7 +169,13 @@ SELECT
   COUNTIF(event_name = 'purchase') as purchases,
   ROUND(SUM(ecommerce.purchase_revenue), 2) as revenue
 FROM `{table_path}`
-WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
+WHERE _TABLE_SUFFIX BETWEEN '{temp_start}' AND '{temp_end}'
+GROUP BY date
+ORDER BY date DESC
+```
+
+이 쿼리는 지정된 기간의 일별 매출을 보여줍니다.
+"""
 GROUP BY date
 ORDER BY date DESC
 ```
@@ -328,11 +356,23 @@ with st.sidebar:
     # 날짜 범위 선택
     date_option = st.radio(
         "분석 기간",
-        ["빠른 선택", "직접 선택"],
-        horizontal=True
+        ["선택 안함", "빠른 선택", "직접 선택"],
+        horizontal=True,
+        index=0  # 기본값: 선택 안함
     )
     
-    if date_option == "빠른 선택":
+    if date_option == "선택 안함":
+        # 기간 설정 초기화
+        if 'start_date' in st.session_state:
+            del st.session_state['start_date']
+        if 'end_date' in st.session_state:
+            del st.session_state['end_date']
+        if 'period_label' in st.session_state:
+            del st.session_state['period_label']
+        
+        st.info("💡 AI가 질문에 맞춰 자동으로 기간을 설정합니다")
+        
+    elif date_option == "빠른 선택":
         quick_period = st.selectbox(
             "기간",
             ["최근 7일", "최근 14일", "최근 30일", "최근 90일"]
@@ -358,7 +398,7 @@ with st.sidebar:
         st.session_state['end_date'] = end_date.strftime('%Y%m%d')
         st.session_state['period_label'] = quick_period
         
-    else:
+    else:  # 직접 선택
         # 직접 날짜 선택
         from datetime import datetime, timedelta
         
@@ -392,10 +432,16 @@ with st.sidebar:
     st.markdown("#### 🚀 빠른 분석")
     
     if st.button("📅 사용자 추이 분석"):
+        # 기간이 설정되지 않았으면 기본값 사용
         if 'start_date' not in st.session_state:
-            st.warning("먼저 기간을 선택하세요!")
-        else:
-            template_query = f"""
+            from datetime import datetime, timedelta
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=7)
+            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+            st.session_state['period_label'] = "최근 7일 (기본)"
+        
+        template_query = f"""
 SELECT
   PARSE_DATE('%Y%m%d', event_date) as date,
   COUNT(DISTINCT user_pseudo_id) as users,
@@ -405,15 +451,21 @@ WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_
 GROUP BY date
 ORDER BY date DESC
 """
-            st.session_state['quick_query'] = template_query
-            st.session_state['query_type'] = 'user_trend'
-            st.rerun()
+        st.session_state['quick_query'] = template_query
+        st.session_state['query_type'] = 'user_trend'
+        st.rerun()
     
     if st.button("💰 매출 추이 분석"):
+        # 기간이 설정되지 않았으면 기본값 사용
         if 'start_date' not in st.session_state:
-            st.warning("먼저 기간을 선택하세요!")
-        else:
-            template_query = f"""
+            from datetime import datetime, timedelta
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=30)
+            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+            st.session_state['period_label'] = "최근 30일 (기본)"
+        
+        template_query = f"""
 SELECT
   PARSE_DATE('%Y%m%d', event_date) as date,
   COUNTIF(event_name = 'purchase') as purchases,
@@ -423,15 +475,21 @@ WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_
 GROUP BY date
 ORDER BY date DESC
 """
-            st.session_state['quick_query'] = template_query
-            st.session_state['query_type'] = 'revenue_trend'
-            st.rerun()
+        st.session_state['quick_query'] = template_query
+        st.session_state['query_type'] = 'revenue_trend'
+        st.rerun()
     
     if st.button("🪑 T50 제품 분석"):
+        # 기간이 설정되지 않았으면 기본값 사용
         if 'start_date' not in st.session_state:
-            st.warning("먼저 기간을 선택하세요!")
-        else:
-            template_query = f"""
+            from datetime import datetime, timedelta
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=30)
+            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+            st.session_state['period_label'] = "최근 30일 (기본)"
+        
+        template_query = f"""
 SELECT
   PARSE_DATE('%Y%m%d', event_date) as date,
   COUNT(DISTINCT user_pseudo_id) as users,
@@ -444,9 +502,9 @@ GROUP BY date
 ORDER BY date DESC
 LIMIT 100
 """
-            st.session_state['quick_query'] = template_query
-            st.session_state['query_type'] = 't50_analysis'
-            st.rerun()
+        st.session_state['quick_query'] = template_query
+        st.session_state['query_type'] = 't50_analysis'
+        st.rerun()
     
     st.markdown("---")
     st.markdown("#### 💬 질문 예시")
