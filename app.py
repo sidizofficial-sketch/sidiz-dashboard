@@ -13,19 +13,21 @@ try:
     
     if "gemini" in st.secrets:
         genai.configure(api_key=st.secrets["gemini"]["api_key"])
-        # [수정] 모델 이름에서 경로를 완전히 빼고 이름만 전달합니다.
+        
+        # [해결 핵심] 404 에러 방지를 위해 경로 없이 이름만 전달
+        # 만약 이래도 안되면 'gemini-pro'로 바꿔서 모델 존재 여부부터 확인해야 합니다.
         model = genai.GenerativeModel('gemini-1.5-flash')
         st.sidebar.success("✅ 엔진 연결 완료")
 
     today = datetime.date.today().strftime('%Y%m%d')
-    INSTRUCTION = f"당신은 시디즈 데이터 분석가입니다. 프로젝트:{info['project_id']}, 데이터셋:analytics_324424314 정보를 바탕으로 SQL과 한글 분석을 제공하세요. 오늘날짜:{today}"
+    INSTRUCTION = f"당신은 시디즈 데이터 분석가입니다. 프로젝트:{info['project_id']}, 데이터셋:analytics_324424314 정보를 바탕으로 SQL과 분석을 제공하세요. 오늘:{today}"
 
 except Exception as e:
     st.error(f"설정 오류: {e}")
     st.stop()
 
-# 3. UI
-st.title("🪑 SIDIZ AI Intelligence")
+# 3. UI 구성
+st.title("🪑 SIDIZ Data Intelligence")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -34,20 +36,18 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-# 4. 질문 처리 (가장 안전한 호출 방식)
+# 4. 질문 처리
 if prompt := st.chat_input("데이터에게 궁금한 점을 물어보세요"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("분석 중..."):
-            try:
-                # generate_content 호출 시 모델명을 다시 확인하지 않도록 함
-                response = model.generate_content(f"{INSTRUCTION}\n\n질문: {prompt}")
-                if response:
-                    st.markdown(response.text)
-                    st.session_state.messages.append({"role": "assistant", "content": response.text})
-            except Exception as e:
-                # 만약 여기서 또 404가 뜨면 API 키 자체의 권한 문제입니다.
-                st.error(f"분석 중 오류 발생: {e}")
+        try:
+            # 404 에러를 피하기 위한 가장 단순한 호출
+            response = model.generate_content(f"{INSTRUCTION}\n\n질문: {prompt}")
+            if response:
+                st.markdown(response.text)
+                st.session_state.messages.append({"role": "assistant", "content": response.text})
+        except Exception as e:
+            st.error(f"분석 중 오류 발생: {e}")
