@@ -176,12 +176,6 @@ ORDER BY date DESC
 
 이 쿼리는 지정된 기간의 일별 매출을 보여줍니다.
 """
-GROUP BY date
-ORDER BY date DESC
-```
-
-이 쿼리는 지정된 기간의 일별 매출을 보여줍니다.
-"""
                 
                 response = model.generate_content(enhanced_prompt)
                 answer = response.text
