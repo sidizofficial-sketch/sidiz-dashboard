@@ -12,7 +12,7 @@ try:
     
     if "gemini" in st.secrets:
         genai.configure(api_key=st.secrets["gemini"]["api_key"])
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         st.sidebar.success("✅ 엔진 연결 완료")
     
     today = datetime.date.today().strftime('%Y%m%d')
