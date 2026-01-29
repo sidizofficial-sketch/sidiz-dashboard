@@ -57,4 +57,35 @@ st.markdown("---")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 기존
+# 기존 대화 내용 표시
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# 5. 사용자 입력 및 AI 처리
+if prompt := st.chat_input("데이터에게 궁금한 점을 물어보세요..."):
+    # 사용자 질문 저장
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # 비서 답변 생성
+    with st.chat_message("assistant"):
+        with st.spinner("빅쿼리 데이터를 분석하고 있습니다..."):
+            try:
+                full_query = INSTRUCTION + "\n\n사용자 질문: " + prompt
+                response = model.generate_content(full_query)
+                
+                if response and response.text:
+                    answer = response.text
+                    st.markdown(answer)
+                    # 답변 저장
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
+                else:
+                    st.error("AI가 응답을 생성하지 못했습니다.")
+                
+            except Exception as e:
+                if "429" in str(e):
+                    st.error("⏳ 할당량 초과: 1분 뒤에 다시 시도해 주세요.", icon="⚠️")
+                else:
+                    st.error(f"분석 중 오류 발생: {e}", icon="🚨")
