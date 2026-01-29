@@ -967,21 +967,25 @@ with st.sidebar:
     # 빠른 분석 템플릿
     st.markdown("#### 🚀 빠른 분석")
     
-    # 네이버 검색량 빠른 비교 버튼
-    if naver_client_id or naver_ad_api_key:
-        if st.button("🔍 T50 vs T80 검색량 비교"):
-            st.session_state['naver_api_type'] = 'keyword_stats'
-            st.session_state['naver_keywords'] = ['T50', 'T80']
-            st.session_state['show_naver_result'] = True
-            st.rerun()
-        
-        if st.button("🔍 의자 키워드 검색량"):
-            st.session_state['naver_api_type'] = 'keyword_stats'
-            st.session_state['naver_keywords'] = ['의자', '사무용의자', '게이밍의자']
-            st.session_state['show_naver_result'] = True
-            st.rerun()
-        
-        st.markdown("---")
+    # 네이버 검색량 빠른 버튼
+    if st.button("🔍 네이버 키워드 검색량"):
+        if naver_client_id or naver_ad_api_key:
+            # 키워드 입력 받기
+            st.info("💡 사이드바 아래 '🔍 네이버 검색 분석' 섹션에서 검색어를 입력하세요.")
+        else:
+            st.warning("⚠️ 네이버 API 키가 설정되지 않았습니다.")
+            st.info("Secrets에 다음을 추가하세요:")
+            st.code("""
+[naver]
+client_id = "your_client_id"
+client_secret = "your_client_secret"
+# 또는 검색광고 API
+ad_api_key = "your_api_key"
+ad_secret_key = "your_secret_key"
+customer_id = "your_customer_id"
+            """)
+    
+    st.markdown("---")
     
     if st.button("📅 사용자 추이 분석"):
         # 기간이 설정되지 않았으면 기본값 사용
