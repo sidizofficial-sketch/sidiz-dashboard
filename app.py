@@ -993,8 +993,58 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # 네이버 검색량 분석 (사용 가이드 위로 이동)
-    if naver_client_id or naver_ad_api_key:
+    # 네이버 검색량 분석
+    st.markdown("### 🔍 네이버 검색 분석")
+    
+    # API 키 설정 상태 확인
+    if not (naver_client_id or naver_ad_api_key):
+        st.warning("⚠️ 네이버 API 키가 설정되지 않았습니다.")
+        with st.expander("🔍 설정 상태 디버깅"):
+            st.write("**Secrets 섹션 확인:**")
+            st.write(f"- `[naver]` 존재: {'naver' in st.secrets}")
+            st.write(f"- `[naver_ads]` 존재: {'naver_ads' in st.secrets}")
+            
+            if 'naver_ads' in st.secrets:
+                st.write("")
+                st.write("**`[naver_ads]` 내용:**")
+                cust = st.secrets['naver_ads'].get('customer_id')
+                api = st.secrets['naver_ads'].get('api_key')
+                sec = st.secrets['naver_ads'].get('secret_key')
+                
+                st.write(f"- customer_id 존재: {bool(cust)}")
+                st.write(f"- api_key 존재: {bool(api)}")
+                st.write(f"- secret_key 존재: {bool(sec)}")
+                
+                if cust:
+                    st.write(f"- customer_id 값: `{cust}`")
+                if api:
+                    st.write(f"- api_key 앞 10자리: `{api[:10]}...`")
+                if sec:
+                    st.write(f"- secret_key 길이: {len(sec)}자")
+            
+            st.write("")
+            st.write("**코드가 읽은 최종 값:**")
+            st.write(f"- naver_ad_api_key: {bool(naver_ad_api_key)}")
+            st.write(f"- naver_ad_secret_key: {bool(naver_ad_secret_key)}")
+            st.write(f"- naver_customer_id: {bool(naver_customer_id)}")
+            
+            if naver_ad_api_key:
+                st.success("✅ API 키가 정상적으로 읽혔습니다!")
+            else:
+                st.error("❌ API 키가 None 또는 빈 문자열입니다.")
+        
+        st.info("**올바른 Secrets 형식:**")
+        st.code("""[naver_ads]
+customer_id = "1234567"
+api_key = "abcd1234efgh"
+secret_key = "xyz789secret"
+        """)
+        st.warning("⚠️ **중요:**")
+        st.markdown("1. 따옴표 `\"` 반드시 사용")
+        st.markdown("2. 값이 비어있으면 안 됨")
+        st.markdown("3. 설정 후 **Reboot app** 필수!")
+    
+    elif naver_client_id or naver_ad_api_key:
         st.markdown("### 🔍 네이버 검색 분석")
         
         # API 선택
