@@ -26,43 +26,44 @@ try:
     table_path = f"{project_id}.{dataset_id}.events_*"  # 수정: 백틱(`) → 따옴표(")
     
     INSTRUCTION = f"""
-    당신은 SIDIZ의 데이터 전문가입니다. BigQuery SQL을 생성할 때 다음 규칙을 따르세요:
+    당신은 SIDIZ의 BigQuery 데이터 분석가입니다.
     
-    [필수 규칙]
-    1. SQL은 반드시 ```sql ... ``` 코드 블록 안에 작성하세요.
-    2. 테이블명: {table_path} (와일드카드 테이블)
-    3. 날짜 필터링 예시: _TABLE_SUFFIX BETWEEN '20240101' AND '20240131'
-    4. UNNEST를 사용할 때는 반드시 괄호를 닫으세요.
-    5. 모든 서브쿼리와 괄호를 정확히 닫으세요.
+    [중요: 간단한 SQL만 작성하세요]
+    - 복잡한 서브쿼리, CTE, 윈도우 함수는 사용하지 마세요
+    - 기본적인 SELECT, WHERE, GROUP BY, ORDER BY만 사용하세요
+    - 모든 괄호를 정확히 닫으세요
     
-    [데이터 구조]
-    - event_date: 날짜 (YYYYMMDD)
+    [테이블 정보]
+    테이블: {table_path}
+    날짜 필터: _TABLE_SUFFIX BETWEEN '20240101' AND '20240131'
+    
+    [GA4 이벤트 구조]
+    - event_date: 이벤트 날짜 (STRING, YYYYMMDD)
+    - event_name: 이벤트 이름 ('purchase', 'page_view' 등)
     - user_pseudo_id: 사용자 ID
-    - items: ARRAY<STRUCT<...>> (제품 정보)
-    - traffic_source.source: 유입 경로
-    - user_properties: ARRAY (사용자 속성)
+    - items: 구매 상품 정보 (ARRAY)
+    - ecommerce.purchase_revenue: 구매 금액
     
-    [분석 항목]
-    (1) 데모그래픽: 연령, 성별
-    (2) 유입경로: traffic_source
-    (3) 성과: 매출, 수량
-    (4) 행태: 이벤트 분석
-    (5) 전환율: 구매율
+    [SQL 작성 규칙]
+    1. 반드시 ```sql 코드블록 안에 작성
+    2. 상품 필터링 시: WHERE EXISTS (SELECT 1 FROM UNNEST(items) AS item WHERE item.item_name LIKE '%상품명%')
+    3. 날짜는 최근 7일: _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+    4. 항상 LIMIT 100 추가
     
-    [SQL 예시]
+    [올바른 SQL 예시]
     ```sql
     SELECT
       event_date,
       COUNT(DISTINCT user_pseudo_id) as users,
-      SUM(ecommerce.purchase_revenue) as revenue
+      COUNTIF(event_name = 'purchase') as purchases
     FROM `{table_path}`
-    WHERE _TABLE_SUFFIX BETWEEN '20240101' AND '20240131'
+    WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
     GROUP BY event_date
     ORDER BY event_date DESC
     LIMIT 100
     ```
     
-    중요: SQL 문법 오류가 없도록 모든 괄호를 정확히 닫고, 올바른 BigQuery 문법을 사용하세요.
+    중요: 복잡한 분석이 필요하면 여러 개의 간단한 쿼리로 나누세요.
     """
     
 except Exception as e:
@@ -145,17 +146,61 @@ ORDER BY event_date DESC
                     # SQL 쿼리 먼저 표시 (디버깅용)
                     with st.expander("🔍 생성된 SQL 쿼리 확인", expanded=True):
                         st.code(sql_query, language='sql')
+                        
+                        # SQL 복사 버튼
+                        if st.button("📋 SQL 복사하기"):
+                            st.code(sql_query, language='sql')
+                            st.success("SQL을 선택해서 복사하세요!")
                     
                     st.markdown("### 📊 데이터 분석 결과")
                     
-                    # BigQuery 실행
-                    try:
-                        query_job = client.query(sql_query)
-                        df = query_job.to_dataframe()
-                    except Exception as sql_error:
-                        st.error(f"SQL 실행 오류: {str(sql_error)}")
-                        st.warning("AI가 생성한 SQL에 오류가 있습니다. 쿼리를 수정하거나 질문을 다시 작성해주세요.")
-                        raise
+                    # BigQuery 실행 (재시도 로직 포함)
+                    max_retries = 2
+                    for attempt in range(max_retries):
+                        try:
+                            query_job = client.query(sql_query)
+                            df = query_job.to_dataframe()
+                            break  # 성공하면 루프 탈출
+                            
+                        except Exception as sql_error:
+                            error_msg = str(sql_error)
+                            
+                            if attempt < max_retries - 1:
+                                st.warning(f"⚠️ SQL 오류 발생. AI에게 수정 요청 중... (시도 {attempt + 1}/{max_retries})")
+                                
+                                # Gemini에게 SQL 수정 요청
+                                fix_prompt = f"""
+다음 BigQuery SQL에 오류가 발생했습니다:
+
+```sql
+{sql_query}
+```
+
+오류 메시지:
+{error_msg}
+
+이 오류를 수정한 올바른 SQL을 ```sql 코드블록 안에만 작성해주세요. 설명은 필요없고 오직 수정된 SQL만 제공하세요.
+"""
+                                fix_response = model.generate_content(fix_prompt)
+                                fix_answer = fix_response.text
+                                
+                                # 수정된 SQL 추출
+                                for pattern in sql_patterns:
+                                    fix_match = re.search(pattern, fix_answer, re.DOTALL | re.IGNORECASE)
+                                    if fix_match:
+                                        sql_query = fix_match.group(1).strip()
+                                        st.info("🔄 수정된 SQL로 재시도합니다...")
+                                        with st.expander("🔧 수정된 SQL 보기"):
+                                            st.code(sql_query, language='sql')
+                                        break
+                            else:
+                                # 최종 실패
+                                st.error(f"❌ SQL 실행 오류: {error_msg}")
+                                st.warning("💡 **해결 방법:**")
+                                st.markdown("1. 위의 'SQL 복사하기' 버튼으로 쿼리를 복사하세요")
+                                st.markdown("2. [BigQuery 콘솔](https://console.cloud.google.com/bigquery)에서 직접 실행해보세요")
+                                st.markdown("3. 질문을 더 구체적으로 바꿔서 다시 시도하세요")
+                                raise
                     
                     if not df.empty:
                         # 데이터 테이블 표시
@@ -194,15 +239,14 @@ ORDER BY event_date DESC
                     
                     sample_query = f"""
 SELECT
-  FORMAT_DATE('%Y-%m-%d', PARSE_DATE('%Y%m%d', event_date)) as date,
+  event_date,
   COUNT(DISTINCT user_pseudo_id) as users,
-  COUNTIF(event_name = 'purchase') as purchases,
-  ROUND(SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END), 2) as revenue
+  COUNTIF(event_name = 'purchase') as purchases
 FROM `{table_path}`
 WHERE _TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
   AND FORMAT_DATE('%Y%m%d', CURRENT_DATE())
-GROUP BY date
-ORDER BY date DESC
+GROUP BY event_date
+ORDER BY event_date DESC
 LIMIT 100
 """
                     
@@ -219,8 +263,8 @@ LIMIT 100
                                 st.dataframe(df, use_container_width=True)
                                 
                                 # 간단한 차트
-                                if 'date' in df.columns and 'revenue' in df.columns:
-                                    fig = px.line(df, x='date', y='revenue', title='최근 7일 매출 추이')
+                                if 'event_date' in df.columns and 'users' in df.columns:
+                                    fig = px.line(df, x='event_date', y='users', title='최근 7일 사용자 추이')
                                     st.plotly_chart(fig, use_container_width=True)
                             else:
                                 st.warning("데이터가 없습니다.")
@@ -244,12 +288,96 @@ LIMIT 100
 # 5. 사이드바 - 추가 정보
 with st.sidebar:
     st.markdown("### 📌 사용 가이드")
+    
+    # 빠른 분석 템플릿
+    st.markdown("#### 🚀 빠른 분석")
+    
+    if st.button("📅 최근 7일 사용자 추이"):
+        template_query = f"""
+SELECT
+  event_date,
+  COUNT(DISTINCT user_pseudo_id) as users,
+  COUNTIF(event_name = 'purchase') as purchases
+FROM `{table_path}`
+WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+GROUP BY event_date
+ORDER BY event_date DESC
+"""
+        st.session_state['quick_query'] = template_query
+        st.rerun()
+    
+    if st.button("💰 오늘 구매 현황"):
+        template_query = f"""
+SELECT
+  COUNT(DISTINCT user_pseudo_id) as buyers,
+  COUNTIF(event_name = 'purchase') as purchases,
+  ROUND(SUM(ecommerce.purchase_revenue), 2) as total_revenue
+FROM `{table_path}`
+WHERE _TABLE_SUFFIX = FORMAT_DATE('%Y%m%d', CURRENT_DATE())
+  AND event_name = 'purchase'
+"""
+        st.session_state['quick_query'] = template_query
+        st.rerun()
+    
+    if st.button("🪑 T50 제품 분석"):
+        template_query = f"""
+SELECT
+  event_date,
+  COUNT(DISTINCT user_pseudo_id) as users,
+  COUNTIF(event_name = 'purchase') as purchases
+FROM `{table_path}`,
+  UNNEST(items) AS item
+WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
+  AND item.item_name LIKE '%T50%'
+GROUP BY event_date
+ORDER BY event_date DESC
+LIMIT 100
+"""
+        st.session_state['quick_query'] = template_query
+        st.rerun()
+    
+    st.markdown("---")
+    st.markdown("#### 💬 질문 예시")
     st.markdown("""
-    - **T50 분석해줘**: T50 제품 분석
-    - **최근 1주일 매출**: 기간별 매출 분석
-    - **20대 여성 구매 패턴**: 세그먼트 분석
+    - **최근 1주일 매출**
+    - **어제 구매 데이터**
+    - **T50 구매자 수**
     """)
     
     if st.button("🗑️ 대화 기록 초기화"):
         st.session_state.messages = []
+        if 'quick_query' in st.session_state:
+            del st.session_state['quick_query']
         st.rerun()
+
+# 빠른 쿼리 실행
+if 'quick_query' in st.session_state and st.session_state['quick_query']:
+    with st.chat_message("assistant"):
+        st.markdown("### 📊 빠른 분석 결과")
+        
+        try:
+            query_job = client.query(st.session_state['quick_query'])
+            df = query_job.to_dataframe()
+            
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
+                
+                # 자동 시각화
+                if len(df) > 1:
+                    if 'event_date' in df.columns and 'users' in df.columns:
+                        fig = px.line(df, x='event_date', y='users', title='일별 사용자 추이')
+                        st.plotly_chart(fig, use_container_width=True)
+                    elif 'event_date' in df.columns and 'purchases' in df.columns:
+                        fig = px.bar(df, x='event_date', y='purchases', title='일별 구매 건수')
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with st.expander("🔍 실행된 쿼리"):
+                    st.code(st.session_state['quick_query'], language='sql')
+            else:
+                st.warning("데이터가 없습니다.")
+                
+        except Exception as e:
+            st.error(f"쿼리 실행 오류: {str(e)}")
+        
+        # 쿼리 실행 후 세션에서 제거
+        del st.session_state['quick_query']
