@@ -31,7 +31,7 @@ try:
     1. SQL은 반드시 ```sql ... ``` 블록에 작성하고 테이블은 {table_path}를 사용하세요.
     2. 결과 데이터에 age, gender, source, revenue, quantity가 포함되게 하세요.
     3. 상품 필터링 시 UNNEST(items)를 사용하세요.
-    4. 분석 결과에 대해 인구통계, 유입경로, 성과, 행태, 전환율 5대 지표를 요약하세요.
+    4. 질문에 대해 (1)인구통계 (2)유입경로 (3)성과 (4)이용행태 (5)전환율 관점에서 분석 인사이트를 요약하세요.
     """
 except Exception as e:
     st.error(f"설정 오류: {e}")
@@ -54,7 +54,7 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        try: # [try 블록 시작]
+        try:
             with st.spinner("AI가 데이터를 분석 중입니다..."):
                 response = model.generate_content(f"{INSTRUCTION}\n\n질문: {prompt}")
                 answer = response.text
@@ -66,4 +66,8 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징
 
                 # SQL 추출 및 실행
                 sql_match = re.search(r"```sql\s*(.*?)\s*```", answer, re.DOTALL)
-                if sql_
+                if sql_match:
+                    query = sql_match.group(1).strip()
+                    df = client.query(query).to_dataframe()
+                    
+                    if not df.empty:
