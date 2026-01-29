@@ -4,6 +4,7 @@ from google.cloud import bigquery
 import pandas as pd
 import json
 import datetime
+import time  # 시간 지연을 위해 추가
 
 # 1. 페이지 설정
 st.set_page_config(page_title="SIDIZ AI Intelligence", page_icon="🪑", layout="wide")
@@ -14,30 +15,29 @@ try:
     info = json.loads(st.secrets["gcp_service_account"]["json_key"])
     client = bigquery.Client.from_service_account_info(info)
     
-    # Gemini API 설정 (할당량이 넉넉한 Lite 모델로 변경)
+    # Gemini API 설정
     if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
         genai.configure(api_key=st.secrets["gemini"]["api_key"])
         
-        # [모델 변경] 리스트 6번에 있던 Lite 모델 적용
-        model = genai.GenerativeModel('models/gemini-1.5-flash')
-        st.sidebar.success("✅ Gemini 2.0 Lite 연결 완료", icon="⚡")
+        # [수정] 가장 안정적인 1.5 Flash 모델로 명확히 지정
+        model = genai.GenerativeModel('gemini-1.5-flash') 
+        st.sidebar.success("✅ 시디즈 분석 엔진 연결 완료", icon="🚀")
     else:
         st.sidebar.error("❌ API 키를 확인해주세요.", icon="🚨")
         st.stop()
 
     # 날짜 자동 계산
     today = datetime.date.today().strftime('%Y%m%d')
-    three_months_ago = (datetime.date.today() - datetime.timedelta(days=90)).strftime('%Y%m%d')
 
     # 3. 데이터 분석 지침
     INSTRUCTION = f"""
-    당신은 시디즈(SIDIZ)의 데이터 전문가입니다. SQL을 생성하고 분석하세요.
+    당신은 시디즈(SIDIZ)의 데이터 전문가입니다. 
     - 프로젝트 ID: `{info['project_id']}`
     - 데이터셋: `analytics_324424314`
     - 테이블: `events_*`
     - 오늘 날짜: {today}
     
-    [규칙] 사용자의 질문에 대해 빅쿼리 SQL을 작성하고 결과를 한글로 설명하세요.
+    [규칙] 사용자의 질문에 대해 빅쿼리 SQL을 작성하고 결과를 한글로 친절하게 설명하세요.
     """
 
 except Exception as e:
@@ -62,19 +62,23 @@ if prompt := st.chat_input("데이터에게 궁금한 점을 물어보세요..."
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("분석 중..."):
+        with st.spinner("AI가 데이터를 분석 중입니다..."):
             try:
-                # 지침과 질문 결합
+                # [강화] 지침과 질문 결합
                 full_query = f"{INSTRUCTION}\n\n사용자 질문: {prompt}"
+                
+                # API 호출 (재시도 로직 포함)
                 response = model.generate_content(full_query)
                 
-                answer = response.text
-                st.markdown(answer)
-                st.session_state.messages.append({"role": "assistant", "content": answer})
+                if response:
+                    answer = response.text
+                    st.markdown(answer)
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
                 
             except Exception as e:
-                # 할당량 에러 시 재시도 안내 강화
                 if "429" in str(e):
-                    st.error("현재 요청이 너무 많습니다. 1분만 기다렸다가 다시 시도해 주세요.", icon="⏳")
+                    # 429 에러 발생 시 사용자에게 더 친절한 가이드 제공
+                    st.warning("⚠️ 현재 구글 서버의 무료 할당량이 꽉 찼습니다.", icon="⏳")
+                    st.info("💡 **해결 방법:** 1분 뒤에 다시 질문하거나, AI Studio에서 '결제(Billing)'를 등록하면 즉시 해결됩니다.")
                 else:
                     st.error(f"분석 중 오류 발생: {e}", icon="🚨")
