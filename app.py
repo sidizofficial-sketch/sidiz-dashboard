@@ -13,7 +13,7 @@ st.set_page_config(page_title="SIDIZ AI", page_icon="🪑", layout="wide")
 try:
     # Secrets에서 GCP 정보 및 Gemini API 키 로드
     info = json.loads(st.secrets["gcp_service_account"]["json_key"])
-    client = bigquery.Client.from_service_account_info(info)
+    client = bigquery.Client.from_service_account_info(info, location="asia-northeast3")
     
     if "gemini" in st.secrets:
         genai.configure(api_key=st.secrets["gemini"]["api_key"])
