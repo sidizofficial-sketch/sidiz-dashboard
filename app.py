@@ -66,14 +66,12 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징
 
                 # SQL 추출 및 실행
                 sql_match = re.search(r"```sql\s*(.*?)\s*```", answer, re.DOTALL)
+                
                 if sql_match:
                     query = sql_match.group(1).strip()
                     df = client.query(query).to_dataframe()
                     
                     if not df.empty:
                         st.divider()
-                        st.subheader("📊 실시간 분석 대시보드")
-                        
-                        # 3. 성과 지표 (KPI Cards)
-                        c1, c2, c3 = st.columns(3)
-                        with c1: st.metric("분석 모수",
+                        st.subheader("📊 실시간 분석 대시보드
+                    
