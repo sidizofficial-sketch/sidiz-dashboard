@@ -27,11 +27,11 @@ try:
     table_path = f"`{project_id}.{dataset_id}.events_*`"
 
     INSTRUCTION = f"""
-    당신은 SIDIZ의 데이터 분석 전문가입니다.
-    1. SQL은 ```sql ... ``` 블록에 작성하고 테이블은 {table_path}를 사용하세요.
+    당신은 SIDIZ 데이터 분석 전문가입니다.
+    1. SQL은 반드시 ```sql ... ``` 블록에 작성하고 테이블은 {table_path}를 사용하세요.
     2. 결과 데이터에 age, gender, source, revenue, quantity가 포함되게 하세요.
     3. 상품 필터링 시 UNNEST(items)를 사용하세요.
-    4. 분석 후 반드시 '인사이트 요약'을 제공하세요.
+    4. 분석 결과에 대해 인구통계, 유입경로, 성과, 행태, 전환율 5대 지표를 요약하세요.
     """
 except Exception as e:
     st.error(f"설정 오류: {e}")
@@ -47,14 +47,14 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-# 4. 분석 실행 로직
+# 4. 분석 및 시각화 실행 로직
 if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징 알려줘)"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        try:
+        try: # [try 블록 시작]
             with st.spinner("AI가 데이터를 분석 중입니다..."):
                 response = model.generate_content(f"{INSTRUCTION}\n\n질문: {prompt}")
                 answer = response.text
@@ -63,3 +63,7 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징
                 st.markdown("### 💡 AI 인사이트 요약")
                 insight_text = re.sub(r"```sql.*?```", "", answer, flags=re.DOTALL)
                 st.info(insight_text)
+
+                # SQL 추출 및 실행
+                sql_match = re.search(r"```sql\s*(.*?)\s*```", answer, re.DOTALL)
+                if sql_
