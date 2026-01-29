@@ -273,15 +273,14 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
         st.markdown(prompt)
     
     with st.chat_message("assistant"):
-        try:
-            # 네이버 검색량 질문 감지 (개선)
-            naver_keywords_detected = (
-                ("네이버" in prompt and ("검색량" in prompt or "검색" in prompt or "키워드" in prompt))
-                or ("검색량" in prompt and "비교" in prompt and any(keyword in prompt for keyword in ["T50", "T80", "의자", "책상"]))
-                or ("검색" in prompt and "순위" in prompt)
-            )
-            
-            if naver_keywords_detected:
+        # 네이버 검색량 질문 감지 (개선)
+        naver_keywords_detected = (
+            ("네이버" in prompt and ("검색량" in prompt or "검색" in prompt or "키워드" in prompt))
+            or ("검색량" in prompt and "비교" in prompt and any(keyword in prompt for keyword in ["T50", "T80", "의자", "책상"]))
+            or ("검색" in prompt and "순위" in prompt)
+        )
+        
+        if naver_keywords_detected:
                 # 키워드 추출 시도
                 keywords = []
                 if "T50" in prompt or "t50" in prompt:
@@ -411,11 +410,13 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
                             with st.expander("📋 상세 통계"):
                                 st.dataframe(df, use_container_width=True)
                 
-                # 네이버 검색량 처리 완료
+                # 네이버 검색량 처리 완료 - 여기서 종료
                 st.session_state.messages.append({"role": "assistant", "content": f"네이버 검색 분석: {', '.join(keywords) if keywords else '사이드바에서 검색어 입력 필요'}"})
-            
-            else:
-                # 일반 데이터 분석 (BigQuery)
+                # 네이버 분석 완료 - BigQuery 분석하지 않음
+        
+        else:
+            # 일반 데이터 분석 (BigQuery)
+            try:
                 
                 # Gemini 사용 불가시 안내
                 if not gemini_available:
@@ -886,11 +887,11 @@ LIMIT 100
                 
                 # 메시지 저장
                 st.session_state.messages.append({"role": "assistant", "content": answer})
-                
-        except Exception as e:
-            error_msg = f"오류 발생: {str(e)}"
-            st.error(error_msg)
-            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                    
+            except Exception as e:
+                error_msg = f"오류 발생: {str(e)}"
+                st.error(error_msg)
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
 
 # 5. 사이드바 - 추가 정보
 with st.sidebar:
