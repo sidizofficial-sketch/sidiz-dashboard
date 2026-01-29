@@ -487,8 +487,68 @@ ORDER BY date DESC
 이 쿼리는 지정된 기간의 일별 매출을 보여줍니다.
 """
                         
-                        response = model.generate_content(enhanced_prompt)
-                        answer = response.text
+                        try:
+                            response = model.generate_content(enhanced_prompt)
+                            answer = response.text
+                        except Exception as gemini_error:
+                            error_str = str(gemini_error)
+                            
+                            # 429 오류 (할당량 초과) 감지
+                            if "429" in error_str or "quota" in error_str.lower():
+                                # retry_delay 추출
+                                import re as re2
+                                retry_match = re2.search(r'retry_delay.*?seconds:\s*(\d+)', error_str)
+                                
+                                if retry_match:
+                                    retry_seconds = int(retry_match.group(1))
+                                    
+                                    st.error("⏱️ **Gemini API 할당량 초과**")
+                                    st.warning(f"🕐 **{retry_seconds}초 후** 다시 시도하시거나, 아래 대체 방법을 이용하세요.")
+                                    
+                                    # 카운트다운 타이머
+                                    if retry_seconds < 120:  # 2분 미만이면 자동 재시도 제안
+                                        if st.button(f"⏳ {retry_seconds}초 후 자동 재시도"):
+                                            import time
+                                            progress_bar = st.progress(0)
+                                            status_text = st.empty()
+                                            
+                                            for i in range(retry_seconds):
+                                                remaining = retry_seconds - i
+                                                progress = (i + 1) / retry_seconds
+                                                progress_bar.progress(progress)
+                                                status_text.text(f"⏳ 재시도까지 {remaining}초 남음...")
+                                                time.sleep(1)
+                                            
+                                            st.rerun()
+                                else:
+                                    st.error("⏱️ **Gemini API 할당량 초과**")
+                                    st.warning("잠시 후 다시 시도해주세요.")
+                                
+                                # 대체 방법 안내
+                                st.info("💡 **지금 바로 사용 가능한 기능:**")
+                                st.markdown("1. **📅 사용자 추이 분석** - 사이드바 버튼")
+                                st.markdown("2. **💰 매출 추이 분석** - 사이드바 버튼")
+                                st.markdown("3. **🪑 T50 제품 종합 분석** - 사이드바 버튼")
+                                st.markdown("4. **🔍 네이버 검색 분석** - 사이드바 (AI 불필요)")
+                                
+                                st.markdown("---")
+                                st.markdown("**⏰ 할당량 정보:**")
+                                st.markdown("- Gemini API 무료 티어: 하루 20회")
+                                st.markdown("- 현재 상태: 할당량 초과")
+                                st.markdown("- [API 사용량 확인하기](https://ai.dev/rate-limit)")
+                                
+                            else:
+                                # 기타 오류
+                                st.error(f"❌ Gemini API 오류: {error_str[:200]}")
+                            
+                            # 메시지 저장
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "content": "AI 기능을 일시적으로 사용할 수 없습니다. 사이드바의 빠른 분석 버튼을 이용해주세요."
+                            })
+                            
+                            # 예외 발생시 여기서 종료 (나머지 코드 실행 안함)
+                            raise gemini_error
                     
                     # 인사이트 섹션
                     st.markdown("### 💡 AI 인사이트 요약")
