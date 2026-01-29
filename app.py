@@ -39,12 +39,19 @@ try:
     naver_ad_secret_key = None
     naver_customer_id = None
     
+    # [naver] 섹션 확인
     if "naver" in st.secrets:
         naver_client_id = st.secrets["naver"].get("client_id")
         naver_client_secret = st.secrets["naver"].get("client_secret")
         naver_ad_api_key = st.secrets["naver"].get("ad_api_key")
         naver_ad_secret_key = st.secrets["naver"].get("ad_secret_key")
         naver_customer_id = st.secrets["naver"].get("customer_id")
+    
+    # [naver_ads] 섹션도 확인 (하위 호환성)
+    if "naver_ads" in st.secrets:
+        naver_ad_api_key = naver_ad_api_key or st.secrets["naver_ads"].get("api_key")
+        naver_ad_secret_key = naver_ad_secret_key or st.secrets["naver_ads"].get("secret_key")
+        naver_customer_id = naver_customer_id or st.secrets["naver_ads"].get("customer_id")
     
     project_id = info['project_id']
     dataset_id = "analytics_487246344"
@@ -973,17 +980,35 @@ with st.sidebar:
             # 키워드 입력 받기
             st.info("💡 사이드바 아래 '🔍 네이버 검색 분석' 섹션에서 검색어를 입력하세요.")
         else:
-            st.warning("⚠️ 네이버 API 키가 설정되지 않았습니다.")
-            st.info("Secrets에 다음을 추가하세요:")
-            st.code("""
-[naver]
-client_id = "your_client_id"
-client_secret = "your_client_secret"
-# 또는 검색광고 API
-ad_api_key = "your_api_key"
-ad_secret_key = "your_secret_key"
-customer_id = "your_customer_id"
+            st.error("⚠️ 네이버 API 키가 설정되지 않았습니다.")
+            
+            # 디버깅 정보
+            with st.expander("🔍 설정 상태 확인"):
+                st.write("Secrets 확인:")
+                st.write(f"- 'naver' in secrets: {'naver' in st.secrets}")
+                if 'naver' in st.secrets:
+                    st.write(f"- client_id 존재: {'client_id' in st.secrets['naver']}")
+                    st.write(f"- client_secret 존재: {'client_secret' in st.secrets['naver']}")
+                    st.write(f"- ad_api_key 존재: {'ad_api_key' in st.secrets['naver']}")
+                    if 'client_id' in st.secrets['naver']:
+                        st.write(f"- client_id 값: {st.secrets['naver']['client_id'][:10]}...")
+                else:
+                    st.write("❌ 'naver' 섹션이 secrets에 없습니다.")
+            
+            st.info("**Secrets 설정 방법:**")
+            st.markdown("1. Streamlit Cloud → 앱 선택")
+            st.markdown("2. Settings → Secrets")
+            st.markdown("3. 아래 형식으로 입력:")
+            st.code("""[naver]
+client_id = "YOUR_CLIENT_ID"
+client_secret = "YOUR_CLIENT_SECRET"
+
+# 검색광고 API (선택)
+ad_api_key = "YOUR_AD_API_KEY"
+ad_secret_key = "YOUR_AD_SECRET_KEY"
+customer_id = "YOUR_CUSTOMER_ID"
             """)
+            st.warning("⚠️ **주의:** 따옴표 사용 및 띄어쓰기 정확히 확인!")
     
     st.markdown("---")
     
