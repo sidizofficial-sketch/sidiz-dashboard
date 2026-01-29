@@ -17,9 +17,7 @@ try:
     # Gemini API 설정
     if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
         genai.configure(api_key=st.secrets["gemini"]["api_key"])
-        
-        # [해결책] 404 방지를 위해 '-latest'를 붙이거나 가장 표준적인 이름을 사용합니다.
-        # 그래도 404가 뜨면 'gemini-1.5-pro-latest'로 시도해보세요.
+        # 404 에러 방지를 위한 가장 안전한 모델명
         model = genai.GenerativeModel('gemini-1.5-flash-latest') 
         st.sidebar.success("✅ 시디즈 분석 엔진 연결 완료", icon="🚀")
     else:
@@ -28,7 +26,7 @@ try:
 
     today = datetime.date.today().strftime('%Y%m%d')
 
-    # 3. 데이터 분석 지침
+    # 3. 데이터 분석 지침 (문자열 결합 방식 사용)
     INSTRUCTION = """
     당신은 시디즈(SIDIZ)의 데이터 분석 전문가입니다. 
     GA4 BigQuery 데이터를 기반으로 답변하세요.
@@ -46,17 +44,14 @@ except Exception as e:
 st.title("🪑 SIDIZ Data Intelligence Portal")
 st.markdown("---")
 
-# 세션 상태 초기화 (이 부분이 정확해야 대화창이 유지됩니다)
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 기존 대화 표시
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# 5. 사용자 입력 처리
-# if prompt가 코드 가장 바깥쪽(왼쪽 벽)에 붙어 있어야 대화창이 사라지지 않습니다.
+# 5. 사용자 입력 및 AI 처리
 prompt = st.chat_input("데이터에게 궁금한 점을 물어보세요...")
 
 if prompt:
@@ -67,21 +62,4 @@ if prompt:
     with st.chat_message("assistant"):
         with st.spinner("빅쿼리 데이터를 분석하고 있습니다..."):
             try:
-                full_query = INSTRUCTION + "\n\n사용자 질문: " + prompt
-                response = model.generate_content(full_query)
-                
-                if response and response.text:
-                    answer = response.text
-                    st.markdown(answer)
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
-                else:
-                    st.error("AI가 답변을 생성하지 못했습니다. 다시 시도해주세요.")
-                
-            except Exception as e:
-                error_str = str(e)
-                if "404" in error_str:
-                    st.error("🚨 여전히 모델을 찾을 수 없습니다. API 키의 플랜(무료/유료)이나 리전을 확인해야 할 수도 있습니다.", icon="🔍")
-                elif "429" in error_str:
-                    st.error("⏳ 할당량 초과: 1분 뒤 재시도", icon="⚠️")
-                else:
-                    st.error(f"오
+                full
