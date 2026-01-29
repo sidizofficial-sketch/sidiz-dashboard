@@ -5,101 +5,103 @@ import pandas as pd
 import json
 import datetime
 import re
+import plotly.express as px
 
 # 1. 페이지 설정
-st.set_page_config(page_title="SIDIZ AI", page_icon="🪑", layout="wide")
+st.set_page_config(page_title="SIDIZ AI Intelligence", page_icon="🪑", layout="wide")
 
-# 2. 보안 및 모델 설정
+# 2. 시디즈 전용 데이터 맵핑 엔진
+SIDIZ_ENGINE = {
+    "METRICS": {
+        "구매전환율(CVR)": "(count(purchase) / count(session_start)) * 100",
+        "B2B수주율": "(수주완료건수 / submit_business_inquiry) * 100",
+        "평균주문금액(AOV)": "sum(value) / count(purchase)"
+    },
+    "EVENT_SPECS": {
+        "submit_business_inquiry": {"desc": "B2B 대량구매 문의", "params": ["business_info", "ce_item_name", "expected_quantity"]},
+        "register_warranty": {"desc": "정품 등록", "params": ["ce_item_id", "ce_item_name"]},
+        "view_item": {"desc": "제품 상세 조회", "params": ["item_id", "item_name"]},
+        "purchase": {"desc": "결제 완료", "params": ["transaction_id", "value", "item_name"]}
+    }
+}
+
+# 3. 보안 및 모델 설정 (들여쓰기 오류 수정 완료)
 try:
-# Secrets에서 GCP 정보 및 Gemini API 키 로드
-info = json.loads(st.secrets["gcp_service_account"]["json_key"])
-client = bigquery.Client.from_service_account_info(info, location="asia-northeast3")
+    # Secrets 로드 및 BigQuery 클라이언트 설정
+    info = json.loads(st.secrets["gcp_service_account"]["json_key"])
+    client = bigquery.Client.from_service_account_info(info, location="asia-northeast3")
 
-if "gemini" in st.secrets:
-genai.configure(api_key=st.secrets["gemini"]["api_key"])
+    if "gemini" in st.secrets:
+        genai.configure(api_key=st.secrets["gemini"]["api_key"])
+        
+        # 사용 가능한 모델 리스트 확인 및 가용 모델 선택
+        model_list = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        if 'models/gemini-1.5-flash' in model_list:
+            model_name = 'models/gemini-1.5-flash'
+        elif 'models/gemini-1.5-pro' in model_list:
+            model_name = 'models/gemini-1.5-pro'
+        else:
+            model_name = 'gemini-pro'
+            
+        model = genai.GenerativeModel(model_name)
+        st.sidebar.success(f"✅ 엔진 연결 완료: {model_name}")
 
-# 사용 가능한 모델 목록 스캔 및 할당
-available_models = [[m.name](http://m.name/) for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-target_model = 'models/gemini-1.5-flash'
-if target_model not in available_models:
-target_model = available_models[0] if available_models else 'gemini-pro'
+    today = datetime.date.today().strftime('%Y%m%d')
+    project_id = info['project_id']
+    dataset_id = "analytics_487246344"
 
-model = genai.GenerativeModel(target_model)
-st.sidebar.success(f"✅ 엔진 연결 완료: {target_model}")
-
-# 분석을 위한 기본 정보 설정
-today = datetime.date.today().strftime('%Y%m%d')
-project_id = info['project_id']
-dataset_id = "analytics_487246344"
-
-INSTRUCTION = f"""
-당신은 시디즈(SIDIZ)의 데이터 분석 전문가입니다.
-Google Analytics 4(GA4) BigQuery 데이터를 기반으로 사용자의 질문에 답하세요.
-
-[환경 정보]
-- 프로젝트 ID: {project_id}
-- 데이터셋: {dataset_id}
-- 테이블 형식: events_YYYYMMDD
-- 오늘 날짜: {today}
-
-[답변 규칙]
-1. 질문을 해결할 수 있는 SQL을 반드시 포함하세요.
-2. SQL은 반드시 sql ...  블록 안에 작성하세요.
-3. 테이블명은 반드시 {project_id}.{dataset_id}.events_YYYYMMDD 형식을 지키세요.
-"""
+    INSTRUCTION = f"""
+    당신은 시디즈(SIDIZ)의 데이터 분석 전문가입니다.
+    - 프로젝트: {project_id}, 데이터셋: {dataset_id}
+    - 명세: {SIDIZ_ENGINE}
+    - 규칙: SQL은 반드시 ```sql ... ``` 블록 안에 작성하세요.
+    """
 
 except Exception as e:
-st.error(f"초기 설정 오류: {e}")
-st.stop()
+    st.error(f"초기 설정 오류 (들여쓰기나 보안 키를 확인하세요): {e}")
+    st.stop()
 
-# 3. UI 구성
+# 4. UI 구성
 st.title("🪑 SIDIZ Data Intelligence")
-st.markdown("---")
+st.caption("시디즈 GA4 데이터 명세서 기반 AI 대시보드")
 
 if "messages" not in st.session_state:
-st.session_state.messages = []
+    st.session_state.messages = []
 
-# 대화 기록 표시
 for m in st.session_state.messages:
-with st.chat_message(m["role"]):
-st.markdown(m["content"])
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
 
-# 4. 질문 처리 및 데이터 실행
-if prompt := st.chat_input("데이터에게 궁금한 점을 물어보세요 (예: 어제 유입수 얼마야?)"):
-# 유저 메시지 표시
-st.session_state.messages.append({"role": "user", "content": prompt})
-with st.chat_message("user"):
-st.markdown(prompt)
+# 5. 질문 처리 및 실행
+if prompt := st.chat_input("질문을 입력하세요"):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-# 비서 메시지 생성
-with st.chat_message("assistant"):
-try:
-with st.spinner("AI가 분석 쿼리를 생성 중입니다..."):
-response = model.generate_content(f"{INSTRUCTION}\n\n질문: {prompt}")
-answer = response.text
-st.markdown(answer)
+    with st.chat_message("assistant"):
+        try:
+            with st.spinner("AI가 쿼리를 생성하고 있습니다..."):
+                response = model.generate_content(f"{INSTRUCTION}\n\n질문: {prompt}")
+                answer = response.text
+                st.markdown(answer)
 
-# 답변에서 SQL 추출 시도
-sql_match = re.search(r"sql\\n(.*?)", answer, re.DOTALL)
-if not sql_match:
-sql_match = re.search(r"\\n(.*?)", answer, re.DOTALL)
+            # SQL 추출 로직 (정규표현식)
+            sql_match = re.search(r"```sql\s*(.*?)\s*```", answer, re.DOTALL | re.IGNORECASE)
+            if sql_match:
+                query = sql_match.group(1).strip()
+                with st.spinner("💾 BigQuery 조회 중..."):
+                    df = client.query(query).to_dataframe()
+                
+                if not df.empty:
+                    st.markdown("### 📊 조회 결과")
+                    st.dataframe(df, use_container_width=True)
+                    if len(df.columns) >= 2:
+                        st.plotly_chart(px.bar(df, x=df.columns[0], y=df.columns[1], color_discrete_sequence=['#FF4B4B']))
+                else:
+                    st.warning("데이터가 없습니다.")
 
-if sql_match:
-query = sql_match.group(1).strip()
-with st.spinner("💾 BigQuery에서 실제 데이터를 조회하는 중..."):
-# 쿼리 실행 및 데이터프레임 변환
-df = client.query(query).to_dataframe()
+            st.session_state.messages.append({"role": "assistant", "content": answer})
 
-st.markdown("### 📊 데이터 조회 결과")
-st.dataframe(df, use_container_width=True)
-
-# 단일 수치 데이터일 경우 강조 표시 (Metric)
-if not df.empty and len(df.columns) == 1 and len(df) == 1:
-label_name = df.columns[0]
-value = df.iloc[0, 0]
-st.metric(label=label_name, value=f"{value:,}")
-
-st.session_state.messages.append({"role": "assistant", "content": answer})
-
-except Exception as e:
-st.error(f"데이터 조회 중 오류가 발생했습니다: {e}")
+        except Exception as e:
+            st.error(f"실행 오류: {e}")
