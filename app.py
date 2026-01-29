@@ -160,80 +160,66 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
     with st.chat_message("user"):
         st.markdown(prompt)
     
-    with st.chat_message("assistant"):
+  with st.chat_message("assistant"):
         try:
-            # 네이버 검색량 질문 감지
-            if "네이버" in prompt and ("검색량" in prompt or "검색" in prompt):
-                # 키워드 추출 시도
-                keywords = []
-                if "T50" in prompt:
-                    keywords.append("T50")
-                if "T80" in prompt:
-                    keywords.append("T80")
-                if "의자" in prompt:
-                    keywords.append("의자")
-                
-                # 키워드가 없으면 사용자에게 요청
-                if not keywords:
-                    st.info("🔍 **네이버 검색량 분석**을 요청하셨습니다!")
-                    st.markdown("사이드바의 '🔍 네이버 검색량 분석' 섹션에서 검색어를 입력해주세요.")
-                    st.markdown("**사용 방법:**")
-                    st.markdown("1. 검색어 입력 (예: T50,T80,의자)")
-                    st.markdown("2. 기간 선택")
-                    st.markdown("3. '검색량 조회' 버튼 클릭")
-                else:
-                    # 자동으로 검색량 조회
-                    from datetime import datetime, timedelta
-                    end_date = datetime.now()
-                    start_date = end_date - timedelta(days=30)
-                    
-                    st.info(f"🔍 네이버 검색량 조회: {', '.join(keywords)}")
-                    
-                    with st.spinner("검색량 조회 중..."):
-                        df, error = get_naver_search_trend(
-                            keywords, 
-                            start_date.strftime('%Y-%m-%d'),
-                            end_date.strftime('%Y-%m-%d'),
-                            'date'
-                        )
-                        
-                        if error:
-                            st.error(f"❌ {error}")
-                        elif df is not None and not df.empty:
-                            # 차트
-                            fig = go.Figure()
-                            
-                            for keyword in keywords:
-                                keyword_data = df[df['키워드'] == keyword]
-                                fig.add_trace(go.Scatter(
-                                    x=keyword_data['날짜'],
-                                    y=keyword_data['검색량'],
-                                    name=keyword,
-                                    mode='lines+markers',
-                                    line=dict(width=3)
-                                ))
-                            
-                            fig.update_layout(
-                                title='최근 30일 검색량 추이',
-                                xaxis=dict(title='날짜'),
-                                yaxis=dict(title='검색량'),
-                                height=400
-                            )
-                            
-                            st.plotly_chart(fig, use_container_width=True)
-                            
-                            # 평균값 표시
-                            st.markdown("#### 평균 검색량")
-                            cols = st.columns(len(keywords))
-                            for i, keyword in enumerate(keywords):
-                                with cols[i]:
-                                    keyword_data = df[df['키워드'] == keyword]
-                                    avg_val = keyword_data['검색량'].mean()
-                                    st.metric(keyword, f"{avg_val:.1f}")
-                
-                # 네이버 검색량 처리 완료
-                st.session_state.messages.append({"role": "assistant", "content": f"네이버 검색량 분석: {', '.join(keywords)}"})
+            # 1. AI를 사용하여 질문의 의도와 키워드 파악
+            intent_prompt = f"""
+            사용자 질문: {prompt}
             
+            1. 이 질문이 네이버 검색량(시장 트렌드)을 묻는 것인가요? (Y/N)
+            2. 조사가 필요한 키워드가 있다면 쉼표로 구분해서 나열하세요.
+            응답 형식: 의도: Y 또는 N / 키워드: 키워드1, 키워드2
+            """
+            intent_res = model.generate_content(intent_prompt).text
+            
+            is_naver = "의도: Y" in intent_res
+            # 키워드 부분만 추출 (예: T50, 시디즈)
+            extracted_keywords = []
+            if "키워드:" in intent_res:
+                kw_str = intent_res.split("키워드:")[1].strip()
+                extracted_keywords = [k.strip() for k in kw_str.split(",") if k.strip()]
+
+            # 2. 네이버 검색량 로직 실행
+            if is_naver and extracted_keywords:
+                st.info(f"🔍 네이버 검색 데이터 분석 중: {', '.join(extracted_keywords)}")
+                
+                with st.spinner("네이버 API에서 실시간 데이터를 가져오고 있습니다..."):
+                    # 앞서 정의한 검색광고 API 함수 호출
+                    df, error = get_naver_search_volume(extracted_keywords)
+                    
+                    if error:
+                        st.error(f"❌ API 오류: {error}")
+                    elif df is not None and not df.empty:
+                        # 시각화: 막대 그래프
+                        fig = px.bar(
+                            df, x='relKeyword', y='총검색량',
+                            text_auto='.2s',
+                            title=f"최근 30일 네이버 통합 검색수 ({', '.join(extracted_keywords)})",
+                            labels={'relKeyword': '키워드', '총검색량': '월간 검색수'},
+                            color='총검색량',
+                            color_continuous_scale='Blues'
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # 상세 지표 (Metric)
+                        cols = st.columns(len(df))
+                        for i, row in df.iterrows():
+                            with cols[i]:
+                                st.metric(row['relKeyword'], f"{row['총검색량']:,}")
+                        
+                        # 테이블 데이터
+                        with st.expander("상세 데이터 보기"):
+                            st.table(df)
+                    else:
+                        st.warning("조회된 검색 데이터가 없습니다. 키워드를 확인해주세요.")
+            
+            else:
+                # 3. 네이버 질문이 아닌 경우: 기존 BigQuery SQL 로직 실행
+                st.write("📊 내부 데이터를 분석합니다...")
+                # (이하 기존의 SQL 생성 및 데이터 분석 코드를 여기에 위치시키면 됩니다)
+
+        except Exception as e:
+            st.error(f"오류가 발생했습니다: {str(e)}")
             else:
                 # 일반 데이터 분석 (BigQuery)
                 # 날짜 키워드 감지 및 기간 자동 설정
