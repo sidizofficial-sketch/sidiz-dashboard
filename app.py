@@ -244,7 +244,10 @@ def get_naver_keyword_stats(keywords):
         st.write("**타임스탬프:**", timestamp)
         st.write("**Customer ID:**", str(naver_customer_id))
         st.write("**API Key (앞 10자):**", naver_ad_api_key[:10] + "...")
-        st.write("**서명 (앞 20자):**", signature[:20] + "...")
+        st.write("**Secret Key (앞 10자):**", clean_secret_key[:10] + "...")
+        st.write("**Secret Key 길이:**", len(clean_secret_key))
+        st.write("**서명 메시지:**", message)
+        st.write("**생성된 서명:**", signature)
         st.write("**검색 키워드:**", ",".join(keywords))
     
     try:
