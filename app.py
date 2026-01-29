@@ -188,7 +188,8 @@ def get_naver_search_trend(keywords, start_date, end_date, time_unit='date'):
 # 네이버 검색광고 API - 키워드 통계 조회
 def get_naver_keyword_stats(keywords):
     """
-    네이버 검색광고 API - 키워드 도구 (월간 검색량, 경쟁도 등)
+    네이버 검색광고 API REST v2 - 키워드 도구
+    블로그 참고: https://blog.naver.com/localdatalab/223711782214
     
     Args:
         keywords: 검색어 리스트
@@ -203,57 +204,78 @@ def get_naver_keyword_stats(keywords):
     import hmac
     import base64
     
-    url = "https://api.naver.com/keywordstool"
+    # REST API v2 엔드포인트
+    BASE_URL = "https://api.naver.com"
+    API_PATH = "/keywordstool"
+    METHOD = "GET"
+    
     timestamp = str(int(datetime.now().timestamp() * 1000))
     
-    # 서명 생성
-    message = f"{timestamp}.GET./keywordstool"
+    # HMAC 서명 생성
+    message = f"{timestamp}.{METHOD}.{API_PATH}"
     signature = base64.b64encode(
         hmac.new(
             naver_ad_secret_key.encode('utf-8'),
             message.encode('utf-8'),
             hashlib.sha256
         ).digest()
-    ).decode('utf-8')
+    )
     
     headers = {
+        "X-Timestamp": timestamp,
         "X-API-KEY": naver_ad_api_key,
         "X-Customer": naver_customer_id,
-        "X-Timestamp": timestamp,
         "X-Signature": signature,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json; charset=UTF-8"
     }
     
-    body = {
-        "keywordList": keywords,
-        "showDetail": "1"
+    # 파라미터 설정
+    params = {
+        "hintKeywords": ",".join(keywords),  # 쉼표로 구분된 키워드
+        "showDetail": "1"  # 상세 정보 포함
     }
     
     try:
-        response = requests.post(url, headers=headers, data=json.dumps(body))
+        url = BASE_URL + API_PATH
+        response = requests.get(url, headers=headers, params=params)
         
         if response.status_code == 200:
             data = response.json()
             
+            # keywordList가 없으면 빈 결과
+            if 'keywordList' not in data or not data['keywordList']:
+                return None, "검색 결과가 없습니다. 키워드를 확인해주세요."
+            
             results = []
-            for item in data.get('keywordList', []):
+            for item in data['keywordList']:
                 results.append({
                     '키워드': item.get('relKeyword', ''),
-                    '월간검색수_PC': item.get('monthlyPcQcCnt', 0),
-                    '월간검색수_모바일': item.get('monthlyMobileQcCnt', 0),
-                    '월간검색수_합계': item.get('monthlyPcQcCnt', 0) + item.get('monthlyMobileQcCnt', 0),
+                    '월간검색수_PC': int(item.get('monthlyPcQcCnt', 0)),
+                    '월간검색수_모바일': int(item.get('monthlyMobileQcCnt', 0)),
+                    '월간검색수_합계': int(item.get('monthlyPcQcCnt', 0)) + int(item.get('monthlyMobileQcCnt', 0)),
                     '경쟁도': item.get('compIdx', 'N/A'),
-                    '월평균클릭수': item.get('monthlyAvePcClkCnt', 0) + item.get('monthlyAveMobileClkCnt', 0),
-                    '월평균클릭비용': item.get('monthlyAvePcClkCnt', 0) * item.get('plAvgDepth', 0)
+                    '월평균클릭수_PC': int(item.get('monthlyAvePcClkCnt', 0)),
+                    '월평균클릭수_모바일': int(item.get('monthlyAveMobileClkCnt', 0)),
+                    '월평균클릭률_PC': round(float(item.get('monthlyAvePcCtr', 0)), 2),
+                    '월평균클릭률_모바일': round(float(item.get('monthlyAveMobileCtr', 0)), 2)
                 })
             
             df = pd.DataFrame(results)
             return df, None
+            
+        elif response.status_code == 401:
+            return None, "❌ 인증 실패: API 키 또는 Secret Key를 확인하세요."
+        elif response.status_code == 403:
+            return None, "❌ 권한 오류: Customer ID를 확인하세요."
+        elif response.status_code == 400:
+            return None, f"❌ 요청 오류: {response.text}"
         else:
-            return None, f"API 오류: {response.status_code} - {response.text}"
+            return None, f"API 오류 ({response.status_code}): {response.text[:200]}"
     
+    except requests.exceptions.RequestException as e:
+        return None, f"네트워크 오류: {str(e)}"
     except Exception as e:
-        return None, f"요청 오류: {str(e)}"
+        return None, f"처리 오류: {str(e)}"
 
 
 # 3. UI 구성
@@ -970,48 +992,78 @@ with st.sidebar:
             st.session_state['analysis_days'] = days_diff
     
     st.markdown("---")
+    
+    # 네이버 검색량 분석 (사용 가이드 위로 이동)
+    if naver_client_id or naver_ad_api_key:
+        st.markdown("### 🔍 네이버 검색 분석")
+        
+        # API 선택
+        api_type = st.radio(
+            "API 선택",
+            ["데이터랩 (트렌드)", "검색광고 (키워드 통계)"],
+            help="데이터랩: 시간별 검색량 추이 / 검색광고: 월간 검색량, 경쟁도 등"
+        )
+        
+        # 검색어 입력
+        keywords_input = st.text_input(
+            "검색어 입력 (쉼표로 구분)",
+            placeholder="예: T50,T80,의자"
+        )
+        
+        if api_type == "데이터랩 (트렌드)":
+            # 기간 선택
+            col1, col2 = st.columns(2)
+            with col1:
+                search_start = st.date_input(
+                    "시작일",
+                    value=datetime.now() - timedelta(days=30),
+                    key="naver_start"
+                )
+            with col2:
+                search_end = st.date_input(
+                    "종료일",
+                    value=datetime.now(),
+                    key="naver_end"
+                )
+            
+            time_unit = st.selectbox(
+                "집계 단위",
+                ["date", "week", "month"],
+                format_func=lambda x: {"date": "일별", "week": "주별", "month": "월별"}[x]
+            )
+            
+            if st.button("🔍 트렌드 조회"):
+                if keywords_input:
+                    keywords = [k.strip() for k in keywords_input.split(",") if k.strip()][:5]
+                    
+                    st.session_state['naver_api_type'] = 'trend'
+                    st.session_state['naver_keywords'] = keywords
+                    st.session_state['naver_start'] = search_start.strftime('%Y-%m-%d')
+                    st.session_state['naver_end'] = search_end.strftime('%Y-%m-%d')
+                    st.session_state['naver_time_unit'] = time_unit
+                    st.session_state['show_naver_result'] = True
+                    st.rerun()
+                else:
+                    st.warning("검색어를 입력하세요!")
+        
+        else:  # 검색광고
+            if st.button("📊 키워드 통계 조회"):
+                if keywords_input:
+                    keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
+                    
+                    st.session_state['naver_api_type'] = 'keyword_stats'
+                    st.session_state['naver_keywords'] = keywords
+                    st.session_state['show_naver_result'] = True
+                    st.rerun()
+                else:
+                    st.warning("검색어를 입력하세요!")
+        
+        st.markdown("---")
+    
     st.markdown("### 📌 사용 가이드")
     
     # 빠른 분석 템플릿
     st.markdown("#### 🚀 빠른 분석")
-    
-    # 네이버 검색량 빠른 버튼
-    if st.button("🔍 네이버 키워드 검색량"):
-        if naver_client_id or naver_ad_api_key:
-            # 키워드 입력 받기
-            st.info("💡 사이드바 아래 '🔍 네이버 검색 분석' 섹션에서 검색어를 입력하세요.")
-        else:
-            st.error("⚠️ 네이버 API 키가 설정되지 않았습니다.")
-            
-            # 디버깅 정보
-            with st.expander("🔍 설정 상태 확인"):
-                st.write("Secrets 확인:")
-                st.write(f"- 'naver' in secrets: {'naver' in st.secrets}")
-                if 'naver' in st.secrets:
-                    st.write(f"- client_id 존재: {'client_id' in st.secrets['naver']}")
-                    st.write(f"- client_secret 존재: {'client_secret' in st.secrets['naver']}")
-                    st.write(f"- ad_api_key 존재: {'ad_api_key' in st.secrets['naver']}")
-                    if 'client_id' in st.secrets['naver']:
-                        st.write(f"- client_id 값: {st.secrets['naver']['client_id'][:10]}...")
-                else:
-                    st.write("❌ 'naver' 섹션이 secrets에 없습니다.")
-            
-            st.info("**Secrets 설정 방법:**")
-            st.markdown("1. Streamlit Cloud → 앱 선택")
-            st.markdown("2. Settings → Secrets")
-            st.markdown("3. 아래 형식으로 입력:")
-            st.code("""[naver]
-client_id = "YOUR_CLIENT_ID"
-client_secret = "YOUR_CLIENT_SECRET"
-
-# 검색광고 API (선택)
-ad_api_key = "YOUR_AD_API_KEY"
-ad_secret_key = "YOUR_AD_SECRET_KEY"
-customer_id = "YOUR_CUSTOMER_ID"
-            """)
-            st.warning("⚠️ **주의:** 따옴표 사용 및 띄어쓰기 정확히 확인!")
-    
-    st.markdown("---")
     
     if st.button("📅 사용자 추이 분석"):
         # 기간이 설정되지 않았으면 기본값 사용
@@ -1083,72 +1135,6 @@ ORDER BY date DESC
     - **작년 12월 데이터 보여줘**
     - **T50 구매 추이**
     """)
-    
-    # 네이버 검색량 분석
-    if naver_client_id or naver_ad_api_key:
-        st.markdown("---")
-        st.markdown("### 🔍 네이버 검색 분석")
-        
-        # API 선택
-        api_type = st.radio(
-            "API 선택",
-            ["데이터랩 (트렌드)", "검색광고 (키워드 통계)"],
-            help="데이터랩: 시간별 검색량 추이 / 검색광고: 월간 검색량, 경쟁도 등"
-        )
-        
-        # 검색어 입력
-        keywords_input = st.text_input(
-            "검색어 입력 (쉼표로 구분)",
-            placeholder="예: T50,T80,의자"
-        )
-        
-        if api_type == "데이터랩 (트렌드)":
-            # 기간 선택
-            col1, col2 = st.columns(2)
-            with col1:
-                search_start = st.date_input(
-                    "시작일",
-                    value=datetime.now() - timedelta(days=30),
-                    key="naver_start"
-                )
-            with col2:
-                search_end = st.date_input(
-                    "종료일",
-                    value=datetime.now(),
-                    key="naver_end"
-                )
-            
-            time_unit = st.selectbox(
-                "집계 단위",
-                ["date", "week", "month"],
-                format_func=lambda x: {"date": "일별", "week": "주별", "month": "월별"}[x]
-            )
-            
-            if st.button("🔍 트렌드 조회"):
-                if keywords_input:
-                    keywords = [k.strip() for k in keywords_input.split(",") if k.strip()][:5]
-                    
-                    st.session_state['naver_api_type'] = 'trend'
-                    st.session_state['naver_keywords'] = keywords
-                    st.session_state['naver_start'] = search_start.strftime('%Y-%m-%d')
-                    st.session_state['naver_end'] = search_end.strftime('%Y-%m-%d')
-                    st.session_state['naver_time_unit'] = time_unit
-                    st.session_state['show_naver_result'] = True
-                    st.rerun()
-                else:
-                    st.warning("검색어를 입력하세요!")
-        
-        else:  # 검색광고
-            if st.button("📊 키워드 통계 조회"):
-                if keywords_input:
-                    keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
-                    
-                    st.session_state['naver_api_type'] = 'keyword_stats'
-                    st.session_state['naver_keywords'] = keywords
-                    st.session_state['show_naver_result'] = True
-                    st.rerun()
-                else:
-                    st.warning("검색어를 입력하세요!")
     
     st.markdown("---")
     
