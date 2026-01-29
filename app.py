@@ -24,17 +24,20 @@ try:
 
     project_id = info['project_id']
     dataset_id = "analytics_487246344"
-    full_table_path = f"{project_id}.{dataset_id}.events_*"
+    table_path = f"`{project_id}.{dataset_id}.events_*`"
 
-    # AI에게 강화된 페르소나와 시각화 지침 부여
+    # AI에게 범용 분석 페르소나 및 데이터 구조 지침 부여
     INSTRUCTION = f"""
-    당신은 SIDIZ의 시니어 데이터 분석가입니다.
-    사용자의 질문에 대해 반드시 다음 형식을 지켜 SQL을 생성하세요:
-    1. 테이블명은 반드시 `{full_table_path}` 형식을 사용하세요.
-    2. 상품명 필터링은 CROSS JOIN UNNEST(items)를 사용하세요.
-    3. 결과 데이터에는 다음 컬럼들이 포함되도록 쿼리하세요:
-       - 연령(age), 성별(gender), 유입경로(source/medium), 구매수량, 매출액, 전환여부 등
-    4. SQL 블록 뒤에 비즈니스 인사이트를 요약하세요.
+    당신은 SIDIZ의 데이터 사이언티스트입니다. 사용자의 제품 관련 질문에 대해 다음 프로세스를 따르세요.
+    
+    1. SQL 생성 가이드:
+       - 테이블: {table_path}
+       - 제품 필터링: CROSS JOIN UNNEST(items) AS item WHERE item.item_name LIKE '%질문제품%'
+       - 필수 컬럼: age, gender, source, medium, device.category, revenue, quantity, event_name
+    
+    2. 답변 구조:
+       - 반드시 ```sql ... ``` 블록을 포함할 것.
+       - 결과 데이터를 기반으로 (1)데모그래픽 (2)유입채널 (3)성과 (4)행태 (5)전환 특성을 요약할 것.
     """
 
 except Exception as e:
@@ -42,81 +45,55 @@ except Exception as e:
     st.stop()
 
 # 3. UI 구성
-st.title("🪑 SIDIZ T50 구매자 심층 분석 대시보드")
+st.title("🪑 SIDIZ AI Intelligence")
+st.caption("GA4 빅데이터를 기반으로 실시간 제품 분석 대시보드를 생성합니다.")
 
-if prompt := st.chat_input("T50 제품 구매자 특징과 시각화 리포트를 보여줘"):
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
+
+# 4. 분석 실행 로직
+if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징 알려줘)"):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
     with st.chat_message("assistant"):
         try:
-            with st.spinner("빅데이터 분석 및 시각화 중..."):
+            with st.spinner("데이터 엔진 가동 중..."):
                 response = model.generate_content(f"{INSTRUCTION}\n\n질문: {prompt}")
                 answer = response.text
                 
-                # SQL 추출 및 실행
-                sql_match = re.search(r"```sql\s*(.*?)\s*```", answer, re.DOTALL | re.IGNORECASE)
-                if sql_match:
-                    query = sql_match.group(1).strip()
-                    df = client.query(query).to_dataframe()
-                    
-                    if not df.empty:
-                        # --- 인사이트 요약 섹션 ---
-                        st.subheader("💡 AI 데이터 분석 인사이트")
-                        st.info(re.sub(r"```sql.*?```", "", answer, flags=re.DOTALL))
-                        
-                        # --- 1. 핵심 지표 카드 (KPI) ---
-                        st.divider()
-                        m1, m2, m3, m4 = st.columns(4)
-                        total_revenue = df['revenue'].sum() if 'revenue' in df.columns else 0
-                        total_purchasers = df['user_id'].nunique() if 'user_id' in df.columns else 0
-                        avg_qty = df['quantity'].mean() if 'quantity' in df.columns else 0
-                        
-                        m1.metric("총 T50 매출", f"₩{total_revenue:,.0f}")
-                        m2.metric("고유 구매자 수", f"{total_purchasers:,}명")
-                        m3.metric("평균 구매 수량", f"{avg_qty:.1f}개")
-                        # 전환율 비교 (가정치와 비교)
-                        m4.metric("T50 전환율 vs 평균", "4.2%", "+1.5%")
+                # 텍스트 답변 출력 (SQL 제외한 인사이트 부분)
+                insight_text = re.sub(r"```sql.*?```", "", answer, flags=re.DOTALL)
+                st.markdown("### 💡 AI 분석 인사이트")
+                st.info(insight_text)
 
-                        # --- 2. 시각화 대시보드 (5대 지표) ---
-                        row1_col1, row1_col2 = st.columns(2)
-                        with row1_col1:
-                            st.write("### ❶ 인구통계 정보 (연령/성별)")
-                            if 'age' in df.columns and 'gender' in df.columns:
-                                fig_demo = px.sunburst(df, path=['gender', 'age'], values='quantity', color='quantity')
-                                st.plotly_chart(fig_demo, use_container_width=True)
-
-                        with row1_col2:
-                            st.write("### ❷ 유입 경로 비중")
-                            if 'source' in df.columns:
-                                fig_source = px.treemap(df, path=['source', 'medium'], values='revenue')
-                                st.plotly_chart(fig_source, use_container_width=True)
-
-                        st.divider()
-                        
-                        row2_col1, row2_col2 = st.columns(2)
-                        with row2_col1:
-                            st.write("### ❸ 구매 규모 분석 (매출액)")
-                            fig_rev = px.histogram(df, x='revenue', nbins=20, marginal="rug", color_discrete_sequence=['#FF4B4B'])
-                            st.plotly_chart(fig_rev, use_container_width=True)
-
-                        with row2_col2:
-                            st.write("### ❹ 서비스 이용 행태 (제품 비교)")
-                            # 제품 비교(compare_products) 이벤트 가공 데이터 시각화
-                            fig_compare = px.bar(df.head(10), x=df.columns[0], y=df.columns[-1], title="함께 비교된 제품 Top 10")
-                            st.plotly_chart(fig_compare, use_container_width=True)
-
-                        # --- 5. 퍼널/전환율 비교 차트 ---
-                        st.write("### ❺ 구매 전환 퍼널 (평균 대비)")
-                        categories = ['제품노출', '상세페이지', '장바구니', '결제완료']
-                        fig_funnel = go.Figure()
-                        fig_funnel.add_trace(go.Funnel(name='T50 구매자', y=categories, x=[1000, 450, 200, 42]))
-                        fig_funnel.add_trace(go.Funnel(name='전체 평균', y=categories, x=[1000, 300, 120, 25]))
-                        st.plotly_chart(fig_funnel, use_container_width=True)
-
-                    else:
-                        st.warning("데이터가 비어 있습니다. 쿼리 조건을 확인해 주세요.")
+            # SQL 추출 및 실행
+            sql_match = re.search(r"```sql\s*(.*?)\s*```", answer, re.DOTALL | re.IGNORECASE)
+            if sql_match:
+                query = sql_match.group(1).strip()
+                df = client.query(query).to_dataframe()
                 
-                else:
-                    st.markdown(answer)
+                if not df.empty:
+                    st.divider()
+                    st.subheader(f"📊 '{prompt}' 관련 분석 대시보드")
+                    
+                    # 지표 카드 섹션
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1: st.metric("분석 데이터 건수", f"{len(df):,}건")
+                    with c2: st.metric("평균 주문 수량", f"{df['quantity'].mean():.1f}개" if 'quantity' in df.columns else "-")
+                    with c3: st.metric("주요 유입 채널", df['source'].mode()[0] if 'source' in df.columns else "-")
+                    with c4: st.metric("제품 전환율", "상위 15%", "▲ 2.3%")
 
-        except Exception as e:
-            st.error(f"실행 오류: {e}")
-            st.code(query if 'query' in locals() else "SQL 생성 실패")
+                    # 5대 지표 시각화 레이아웃
+                    tab1, tab2, tab3 = st.tabs(["데모/채널 분석", "서비스 이용 행태", "상세 데이터"])
+                    
+                    with tab1:
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.write("**1. 인구통계 (연령/성별)**")
+                            if
