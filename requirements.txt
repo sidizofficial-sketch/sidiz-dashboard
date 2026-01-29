@@ -3,3 +3,4 @@ google-generativeai>=0.8.0
 google-cloud-bigquery
 pandas
 plotly
+db-dtypes
