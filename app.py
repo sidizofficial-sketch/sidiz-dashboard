@@ -27,8 +27,7 @@ try:
     # 날짜 자동 계산
     today = datetime.date.today().strftime('%Y%m%d')
 
-    # 3. 데이터 분석 지침 (Syntax Error 방지를 위해 구조 변경)
-    # 중괄호 에러를 피하기 위해 f-string 대신 일반 문자열로 작성합니다.
+    # 3. 데이터 분석 지침
     INSTRUCTION = """
     당신은 대한민국 대표 의자 브랜드 '시디즈(SIDIZ)'의 데이터 분석 전문가입니다. 
     사용자의 질문에 대해 Google Analytics 4(GA4) BigQuery 데이터를 기반으로 답변하세요.
@@ -54,5 +53,8 @@ except Exception as e:
 st.title("🪑 SIDIZ Data Intelligence Portal")
 st.markdown("---")
 
+# 세션 상태 초기화 (메시지 저장용)
 if "messages" not in st.session_state:
-    st.session_
+    st.session_state.messages = []
+
+# 기존
