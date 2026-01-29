@@ -30,7 +30,7 @@ try:
     # 분석을 위한 기본 정보 설정
     today = datetime.date.today().strftime('%Y%m%d')
     project_id = info['project_id']
-    dataset_id = "analytics_324424314"
+    dataset_id = "analytics_487246344"
     
     INSTRUCTION = f"""
     당신은 시디즈(SIDIZ)의 데이터 분석 전문가입니다. 
