@@ -26,9 +26,16 @@ try:
     # 네이버 API 설정
     naver_client_id = None
     naver_client_secret = None
+    naver_ad_api_key = None
+    naver_ad_secret_key = None
+    naver_customer_id = None
+    
     if "naver" in st.secrets:
-        naver_client_id = st.secrets["naver"]["client_id"]
-        naver_client_secret = st.secrets["naver"]["client_secret"]
+        naver_client_id = st.secrets["naver"].get("client_id")
+        naver_client_secret = st.secrets["naver"].get("client_secret")
+        naver_ad_api_key = st.secrets["naver"].get("ad_api_key")
+        naver_ad_secret_key = st.secrets["naver"].get("ad_secret_key")
+        naver_customer_id = st.secrets["naver"].get("customer_id")
     
     project_id = info['project_id']
     dataset_id = "analytics_487246344"
@@ -50,21 +57,36 @@ try:
     - event_date: 이벤트 날짜 (STRING, YYYYMMDD)
     - event_name: 이벤트 이름 ('page_view', 'purchase' 등)
     - user_pseudo_id: 사용자 ID
+    - event_params: 이벤트 파라미터 (ARRAY of STRUCT)
+      - key: 파라미터 이름 (예: 'page_location', 'page_title')
+      - value.string_value: 문자열 값
     - items: 구매 상품 정보 (ARRAY)
     - ecommerce.purchase_revenue: 구매 금액
-    - page_location: 페이지 URL (예: https://www.example.com/product/T50)
     
-    [제품 분석 방법]
-    제품명(T50, T80 등)으로 분석할 때는 page_location을 사용하세요:
+    [event_params 접근 방법]
+    페이지 정보는 event_params에 저장되어 있습니다:
     
     ```sql
-    -- 올바른 예시: page_location으로 제품 필터링
+    -- 페이지 URL 추출
+    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location')
+    
+    -- 페이지 제목 추출  
+    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_title')
+    ```
+    
+    [제품 분석 예시]
+    T50 제품 페이지 분석:
+    
+    ```sql
     SELECT
       event_date,
       COUNT(DISTINCT user_pseudo_id) as users
     FROM `{table_path}`
     WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
-      AND page_location LIKE '%/T50%'
+      AND (
+        (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%T50%'
+        OR (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_title') LIKE '%T50%'
+      )
     GROUP BY event_date
     ORDER BY event_date DESC
     LIMIT 100
@@ -72,7 +94,7 @@ try:
     
     [SQL 작성 규칙]
     1. 반드시 ```sql 코드블록 안에 작성
-    2. 제품 필터링: WHERE page_location LIKE '%/제품명%'
+    2. 제품 필터링: event_params의 page_location 또는 page_title 사용
     3. 날짜는 _TABLE_SUFFIX 사용
     4. 항상 LIMIT 100 추가
     
@@ -147,6 +169,76 @@ def get_naver_search_trend(keywords, start_date, end_date, time_unit='date'):
     except Exception as e:
         return None, f"요청 오류: {str(e)}"
 
+# 네이버 검색광고 API - 키워드 통계 조회
+def get_naver_keyword_stats(keywords):
+    """
+    네이버 검색광고 API - 키워드 도구 (월간 검색량, 경쟁도 등)
+    
+    Args:
+        keywords: 검색어 리스트
+    
+    Returns:
+        DataFrame with keyword statistics
+    """
+    if not naver_ad_api_key or not naver_ad_secret_key or not naver_customer_id:
+        return None, "네이버 검색광고 API 키가 설정되지 않았습니다."
+    
+    import hashlib
+    import hmac
+    import base64
+    
+    url = "https://api.naver.com/keywordstool"
+    timestamp = str(int(datetime.now().timestamp() * 1000))
+    
+    # 서명 생성
+    message = f"{timestamp}.GET./keywordstool"
+    signature = base64.b64encode(
+        hmac.new(
+            naver_ad_secret_key.encode('utf-8'),
+            message.encode('utf-8'),
+            hashlib.sha256
+        ).digest()
+    ).decode('utf-8')
+    
+    headers = {
+        "X-API-KEY": naver_ad_api_key,
+        "X-Customer": naver_customer_id,
+        "X-Timestamp": timestamp,
+        "X-Signature": signature,
+        "Content-Type": "application/json"
+    }
+    
+    body = {
+        "keywordList": keywords,
+        "showDetail": "1"
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(body))
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            results = []
+            for item in data.get('keywordList', []):
+                results.append({
+                    '키워드': item.get('relKeyword', ''),
+                    '월간검색수_PC': item.get('monthlyPcQcCnt', 0),
+                    '월간검색수_모바일': item.get('monthlyMobileQcCnt', 0),
+                    '월간검색수_합계': item.get('monthlyPcQcCnt', 0) + item.get('monthlyMobileQcCnt', 0),
+                    '경쟁도': item.get('compIdx', 'N/A'),
+                    '월평균클릭수': item.get('monthlyAvePcClkCnt', 0) + item.get('monthlyAveMobileClkCnt', 0),
+                    '월평균클릭비용': item.get('monthlyAvePcClkCnt', 0) * item.get('plAvgDepth', 0)
+                })
+            
+            df = pd.DataFrame(results)
+            return df, None
+        else:
+            return None, f"API 오류: {response.status_code} - {response.text}"
+    
+    except Exception as e:
+        return None, f"요청 오류: {str(e)}"
+
 
 # 3. UI 구성
 st.title("🪑 SIDIZ AI Intelligence Dashboard")
@@ -167,76 +259,118 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
     with st.chat_message("assistant"):
         try:
             # 네이버 검색량 질문 감지
-            if "네이버" in prompt and ("검색량" in prompt or "검색" in prompt):
+            if "네이버" in prompt and ("검색량" in prompt or "검색" in prompt or "키워드" in prompt):
                 # 키워드 추출 시도
                 keywords = []
-                if "T50" in prompt:
+                if "T50" in prompt or "t50" in prompt:
                     keywords.append("T50")
-                if "T80" in prompt:
+                if "T80" in prompt or "t80" in prompt:
                     keywords.append("T80")
                 if "의자" in prompt:
                     keywords.append("의자")
+                if "책상" in prompt:
+                    keywords.append("책상")
                 
                 # 키워드가 없으면 사용자에게 요청
                 if not keywords:
-                    st.info("🔍 **네이버 검색량 분석**을 요청하셨습니다!")
-                    st.markdown("사이드바의 '🔍 네이버 검색량 분석' 섹션에서 검색어를 입력해주세요.")
+                    st.info("🔍 **네이버 검색 분석**을 요청하셨습니다!")
+                    st.markdown("사이드바의 '🔍 네이버 검색 분석' 섹션에서 검색어를 입력해주세요.")
                     st.markdown("**사용 방법:**")
-                    st.markdown("1. 검색어 입력 (예: T50,T80,의자)")
-                    st.markdown("2. 기간 선택")
-                    st.markdown("3. '검색량 조회' 버튼 클릭")
+                    st.markdown("1. API 선택: 데이터랩(트렌드) 또는 검색광고(통계)")
+                    st.markdown("2. 검색어 입력 (예: T50,T80,의자)")
+                    st.markdown("3. 조회 버튼 클릭")
                 else:
-                    # 자동으로 검색량 조회
-                    from datetime import datetime, timedelta
-                    end_date = datetime.now()
-                    start_date = end_date - timedelta(days=30)
+                    # 검색광고 API 우선 사용 (AI 불필요)
+                    st.info(f"🔍 네이버 키워드 통계 조회: {', '.join(keywords)}")
                     
-                    st.info(f"🔍 네이버 검색량 조회: {', '.join(keywords)}")
-                    
-                    with st.spinner("검색량 조회 중..."):
-                        df, error = get_naver_search_trend(
-                            keywords, 
-                            start_date.strftime('%Y-%m-%d'),
-                            end_date.strftime('%Y-%m-%d'),
-                            'date'
-                        )
+                    with st.spinner("키워드 통계 조회 중..."):
+                        df, error = get_naver_keyword_stats(keywords)
                         
                         if error:
-                            st.error(f"❌ {error}")
+                            st.warning(f"⚠️ 검색광고 API: {error}")
+                            st.info("💡 데이터랩 API로 대체 조회...")
+                            
+                            # 데이터랩 API로 대체
+                            from datetime import datetime, timedelta
+                            end_date = datetime.now()
+                            start_date = end_date - timedelta(days=30)
+                            
+                            df, error = get_naver_search_trend(
+                                keywords,
+                                start_date.strftime('%Y-%m-%d'),
+                                end_date.strftime('%Y-%m-%d'),
+                                'date'
+                            )
+                            
+                            if not error and df is not None and not df.empty:
+                                # 트렌드 차트
+                                fig = go.Figure()
+                                
+                                for keyword in keywords:
+                                    keyword_data = df[df['키워드'] == keyword]
+                                    fig.add_trace(go.Scatter(
+                                        x=keyword_data['날짜'],
+                                        y=keyword_data['검색량'],
+                                        name=keyword,
+                                        mode='lines+markers',
+                                        line=dict(width=3)
+                                    ))
+                                
+                                fig.update_layout(
+                                    title='최근 30일 검색량 추이',
+                                    xaxis=dict(title='날짜'),
+                                    yaxis=dict(title='검색량'),
+                                    height=400
+                                )
+                                
+                                st.plotly_chart(fig, use_container_width=True)
+                        
                         elif df is not None and not df.empty:
-                            # 차트
+                            # 키워드 통계 표시
+                            st.markdown("#### 📊 키워드 분석 결과")
+                            
+                            # KPI 카드
+                            cols = st.columns(len(df))
+                            for i, row in df.iterrows():
+                                if i < len(cols):
+                                    with cols[i]:
+                                        st.metric(
+                                            row['키워드'],
+                                            f"{row['월간검색수_합계']:,}",
+                                            f"경쟁도 {row['경쟁도']}"
+                                        )
+                            
+                            # 비교 차트
                             fig = go.Figure()
                             
-                            for keyword in keywords:
-                                keyword_data = df[df['키워드'] == keyword]
-                                fig.add_trace(go.Scatter(
-                                    x=keyword_data['날짜'],
-                                    y=keyword_data['검색량'],
-                                    name=keyword,
-                                    mode='lines+markers',
-                                    line=dict(width=3)
-                                ))
+                            fig.add_trace(go.Bar(
+                                x=df['키워드'],
+                                y=df['월간검색수_PC'],
+                                name='PC',
+                                marker_color='#1f77b4'
+                            ))
+                            
+                            fig.add_trace(go.Bar(
+                                x=df['키워드'],
+                                y=df['월간검색수_모바일'],
+                                name='모바일',
+                                marker_color='#ff7f0e'
+                            ))
                             
                             fig.update_layout(
-                                title='최근 30일 검색량 추이',
-                                xaxis=dict(title='날짜'),
-                                yaxis=dict(title='검색량'),
+                                title='월간 검색수 비교',
+                                barmode='stack',
                                 height=400
                             )
                             
                             st.plotly_chart(fig, use_container_width=True)
                             
-                            # 평균값 표시
-                            st.markdown("#### 평균 검색량")
-                            cols = st.columns(len(keywords))
-                            for i, keyword in enumerate(keywords):
-                                with cols[i]:
-                                    keyword_data = df[df['키워드'] == keyword]
-                                    avg_val = keyword_data['검색량'].mean()
-                                    st.metric(keyword, f"{avg_val:.1f}")
+                            # 상세 데이터
+                            with st.expander("📋 상세 통계"):
+                                st.dataframe(df, use_container_width=True)
                 
                 # 네이버 검색량 처리 완료
-                st.session_state.messages.append({"role": "assistant", "content": f"네이버 검색량 분석: {', '.join(keywords)}"})
+                st.session_state.messages.append({"role": "assistant", "content": f"네이버 검색 분석: {', '.join(keywords) if keywords else '사이드바에서 검색어 입력 필요'}"})
             
             else:
                 # 일반 데이터 분석 (BigQuery)
@@ -735,7 +869,8 @@ with st.sidebar:
 SELECT
   PARSE_DATE('%Y%m%d', event_date) as date,
   COUNT(DISTINCT user_pseudo_id) as users,
-  COUNTIF(event_name = 'page_view') as page_views
+  COUNTIF(event_name = 'page_view') as page_views,
+  COUNTIF(event_name = 'purchase') as purchases
 FROM `{table_path}`
 WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
 GROUP BY date
@@ -783,10 +918,14 @@ ORDER BY date DESC
 SELECT
   PARSE_DATE('%Y%m%d', event_date) as date,
   COUNT(DISTINCT user_pseudo_id) as users,
-  COUNTIF(event_name = 'page_view') as page_views
+  COUNTIF(event_name = 'page_view') as page_views,
+  COUNTIF(event_name = 'purchase') as purchases
 FROM `{table_path}`
 WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
-  AND (page_location LIKE '%/T50%' OR page_location LIKE '%/t50%')
+  AND (
+    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%T50%'
+    OR (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_title') LIKE '%T50%'
+  )
 GROUP BY date
 ORDER BY date DESC
 LIMIT 100
@@ -804,53 +943,70 @@ LIMIT 100
     """)
     
     # 네이버 검색량 분석
-    if naver_client_id:
+    if naver_client_id or naver_ad_api_key:
         st.markdown("---")
-        st.markdown("### 🔍 네이버 검색량 분석")
+        st.markdown("### 🔍 네이버 검색 분석")
+        
+        # API 선택
+        api_type = st.radio(
+            "API 선택",
+            ["데이터랩 (트렌드)", "검색광고 (키워드 통계)"],
+            help="데이터랩: 시간별 검색량 추이 / 검색광고: 월간 검색량, 경쟁도 등"
+        )
         
         # 검색어 입력
         keywords_input = st.text_input(
-            "검색어 입력 (쉼표로 구분, 최대 5개)",
+            "검색어 입력 (쉼표로 구분)",
             placeholder="예: T50,T80,의자"
         )
         
-        # 기간 선택
-        col1, col2 = st.columns(2)
-        with col1:
-            search_start = st.date_input(
-                "시작일",
-                value=datetime.now() - timedelta(days=30),
-                key="naver_start"
+        if api_type == "데이터랩 (트렌드)":
+            # 기간 선택
+            col1, col2 = st.columns(2)
+            with col1:
+                search_start = st.date_input(
+                    "시작일",
+                    value=datetime.now() - timedelta(days=30),
+                    key="naver_start"
+                )
+            with col2:
+                search_end = st.date_input(
+                    "종료일",
+                    value=datetime.now(),
+                    key="naver_end"
+                )
+            
+            time_unit = st.selectbox(
+                "집계 단위",
+                ["date", "week", "month"],
+                format_func=lambda x: {"date": "일별", "week": "주별", "month": "월별"}[x]
             )
-        with col2:
-            search_end = st.date_input(
-                "종료일",
-                value=datetime.now(),
-                key="naver_end"
-            )
+            
+            if st.button("🔍 트렌드 조회"):
+                if keywords_input:
+                    keywords = [k.strip() for k in keywords_input.split(",") if k.strip()][:5]
+                    
+                    st.session_state['naver_api_type'] = 'trend'
+                    st.session_state['naver_keywords'] = keywords
+                    st.session_state['naver_start'] = search_start.strftime('%Y-%m-%d')
+                    st.session_state['naver_end'] = search_end.strftime('%Y-%m-%d')
+                    st.session_state['naver_time_unit'] = time_unit
+                    st.session_state['show_naver_result'] = True
+                    st.rerun()
+                else:
+                    st.warning("검색어를 입력하세요!")
         
-        time_unit = st.selectbox(
-            "집계 단위",
-            ["date", "week", "month"],
-            format_func=lambda x: {"date": "일별", "week": "주별", "month": "월별"}[x]
-        )
-        
-        if st.button("🔍 검색량 조회"):
-            if keywords_input:
-                keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
-                
-                if len(keywords) > 5:
-                    st.warning("검색어는 최대 5개까지 가능합니다.")
-                    keywords = keywords[:5]
-                
-                st.session_state['naver_keywords'] = keywords
-                st.session_state['naver_start'] = search_start.strftime('%Y-%m-%d')
-                st.session_state['naver_end'] = search_end.strftime('%Y-%m-%d')
-                st.session_state['naver_time_unit'] = time_unit
-                st.session_state['show_naver_result'] = True
-                st.rerun()
-            else:
-                st.warning("검색어를 입력하세요!")
+        else:  # 검색광고
+            if st.button("📊 키워드 통계 조회"):
+                if keywords_input:
+                    keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
+                    
+                    st.session_state['naver_api_type'] = 'keyword_stats'
+                    st.session_state['naver_keywords'] = keywords
+                    st.session_state['show_naver_result'] = True
+                    st.rerun()
+                else:
+                    st.warning("검색어를 입력하세요!")
     
     st.markdown("---")
     
@@ -865,74 +1021,145 @@ LIMIT 100
 # 네이버 검색량 결과 표시
 if 'show_naver_result' in st.session_state and st.session_state['show_naver_result']:
     with st.chat_message("assistant"):
-        st.markdown("### 🔍 네이버 검색량 분석 결과")
-        
+        api_type = st.session_state.get('naver_api_type', 'trend')
         keywords = st.session_state['naver_keywords']
-        start_date = st.session_state['naver_start']
-        end_date = st.session_state['naver_end']
-        time_unit = st.session_state['naver_time_unit']
         
-        st.info(f"📅 분석 기간: {start_date} ~ {end_date} | 키워드: {', '.join(keywords)}")
-        
-        with st.spinner("네이버 검색량 조회 중..."):
-            df, error = get_naver_search_trend(keywords, start_date, end_date, time_unit)
+        if api_type == 'keyword_stats':
+            # 검색광고 API - 키워드 통계
+            st.markdown("### 📊 네이버 키워드 통계")
+            st.info(f"🔍 키워드: {', '.join(keywords)}")
             
-            if error:
-                st.error(f"❌ {error}")
-            elif df is not None and not df.empty:
-                # KPI 카드
-                st.markdown("#### 핵심 지표")
-                cols = st.columns(len(keywords))
+            with st.spinner("키워드 통계 조회 중..."):
+                df, error = get_naver_keyword_stats(keywords)
                 
-                for i, keyword in enumerate(keywords):
-                    with cols[i]:
-                        keyword_data = df[df['키워드'] == keyword]
-                        if not keyword_data.empty:
-                            avg_search = keyword_data['검색량'].mean()
-                            max_search = keyword_data['검색량'].max()
-                            st.metric(
-                                keyword,
-                                f"{avg_search:.1f}",
-                                f"최대 {max_search:.1f}"
-                            )
-                
-                st.markdown("---")
-                
-                # 검색량 추이 차트
-                fig = go.Figure()
-                
-                for keyword in keywords:
-                    keyword_data = df[df['키워드'] == keyword]
-                    fig.add_trace(go.Scatter(
-                        x=keyword_data['날짜'],
-                        y=keyword_data['검색량'],
-                        name=keyword,
-                        mode='lines+markers',
-                        line=dict(width=3),
-                        marker=dict(size=6)
+                if error:
+                    st.error(f"❌ {error}")
+                    st.markdown("**Secrets 설정이 필요합니다:**")
+                    st.code("""
+[naver]
+ad_api_key = "your_api_key"
+ad_secret_key = "your_secret_key"
+customer_id = "your_customer_id"
+                    """)
+                elif df is not None and not df.empty:
+                    # KPI 카드
+                    st.markdown("#### 핵심 지표")
+                    
+                    cols = st.columns(len(df))
+                    for i, row in df.iterrows():
+                        if i < len(cols):
+                            with cols[i]:
+                                st.metric(
+                                    row['키워드'],
+                                    f"{row['월간검색수_합계']:,}",
+                                    f"경쟁도 {row['경쟁도']}"
+                                )
+                    
+                    st.markdown("---")
+                    
+                    # 월간 검색수 비교 차트
+                    fig = go.Figure()
+                    
+                    fig.add_trace(go.Bar(
+                        x=df['키워드'],
+                        y=df['월간검색수_PC'],
+                        name='PC',
+                        marker_color='#1f77b4'
                     ))
+                    
+                    fig.add_trace(go.Bar(
+                        x=df['키워드'],
+                        y=df['월간검색수_모바일'],
+                        name='모바일',
+                        marker_color='#ff7f0e'
+                    ))
+                    
+                    fig.update_layout(
+                        title='월간 검색수 비교 (PC vs 모바일)',
+                        xaxis=dict(title='키워드'),
+                        yaxis=dict(title='검색수'),
+                        barmode='stack',
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 상세 데이터
+                    with st.expander("📋 상세 통계 보기"):
+                        st.dataframe(df, use_container_width=True)
+                    
+                    st.success("✅ 키워드 통계 조회 완료!")
+                else:
+                    st.warning("데이터가 없습니다.")
+        
+        else:
+            # 데이터랩 API - 트렌드
+            start_date = st.session_state['naver_start']
+            end_date = st.session_state['naver_end']
+            time_unit = st.session_state['naver_time_unit']
+            
+            st.markdown("### 🔍 네이버 검색량 추이")
+            st.info(f"📅 분석 기간: {start_date} ~ {end_date} | 키워드: {', '.join(keywords)}")
+            
+            with st.spinner("네이버 검색량 조회 중..."):
+                df, error = get_naver_search_trend(keywords, start_date, end_date, time_unit)
                 
-                fig.update_layout(
-                    title='검색량 추이 비교',
-                    xaxis=dict(title='날짜'),
-                    yaxis=dict(title='검색량 (상대값)'),
-                    hovermode='x unified',
-                    height=450,
-                    showlegend=True,
-                    legend=dict(x=0.01, y=0.99)
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # 상세 데이터
-                with st.expander("📋 상세 데이터 보기"):
-                    # Pivot 테이블로 변환
-                    pivot_df = df.pivot(index='날짜', columns='키워드', values='검색량')
-                    st.dataframe(pivot_df, use_container_width=True)
-                
-                st.success("✅ 네이버 검색량 조회 완료!")
-            else:
-                st.warning("데이터가 없습니다.")
+                if error:
+                    st.error(f"❌ {error}")
+                elif df is not None and not df.empty:
+                    # KPI 카드
+                    st.markdown("#### 핵심 지표")
+                    cols = st.columns(len(keywords))
+                    
+                    for i, keyword in enumerate(keywords):
+                        with cols[i]:
+                            keyword_data = df[df['키워드'] == keyword]
+                            if not keyword_data.empty:
+                                avg_search = keyword_data['검색량'].mean()
+                                max_search = keyword_data['검색량'].max()
+                                st.metric(
+                                    keyword,
+                                    f"{avg_search:.1f}",
+                                    f"최대 {max_search:.1f}"
+                                )
+                    
+                    st.markdown("---")
+                    
+                    # 검색량 추이 차트
+                    fig = go.Figure()
+                    
+                    for keyword in keywords:
+                        keyword_data = df[df['키워드'] == keyword]
+                        fig.add_trace(go.Scatter(
+                            x=keyword_data['날짜'],
+                            y=keyword_data['검색량'],
+                            name=keyword,
+                            mode='lines+markers',
+                            line=dict(width=3),
+                            marker=dict(size=6)
+                        ))
+                    
+                    fig.update_layout(
+                        title='검색량 추이 비교',
+                        xaxis=dict(title='날짜'),
+                        yaxis=dict(title='검색량 (상대값)'),
+                        hovermode='x unified',
+                        height=450,
+                        showlegend=True,
+                        legend=dict(x=0.01, y=0.99)
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 상세 데이터
+                    with st.expander("📋 상세 데이터 보기"):
+                        # Pivot 테이블로 변환
+                        pivot_df = df.pivot(index='날짜', columns='키워드', values='검색량')
+                        st.dataframe(pivot_df, use_container_width=True)
+                    
+                    st.success("✅ 네이버 검색량 조회 완료!")
+                else:
+                    st.warning("데이터가 없습니다.")
         
         # 결과 표시 후 플래그 제거
         del st.session_state['show_naver_result']
