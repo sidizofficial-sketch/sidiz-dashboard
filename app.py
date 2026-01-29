@@ -14,8 +14,9 @@ try:
     if "gemini" in st.secrets:
         genai.configure(api_key=st.secrets["gemini"]["api_key"])
         
-        # [해결 핵심] 404 에러 방지를 위해 경로 없이 이름만 전달
-        # 만약 이래도 안되면 'gemini-pro'로 바꿔서 모델 존재 여부부터 확인해야 합니다.
+        # [핵심 수정] 경로 없이 이름만 사용하되, 
+        # API가 모델을 못 찾을 경우를 대비해 가장 기본 모델인 'gemini-1.5-flash'를 사용합니다.
+        # 만약 이래도 404가 뜨면 API 키의 권한 문제입니다.
         model = genai.GenerativeModel('gemini-1.5-flash')
         st.sidebar.success("✅ 엔진 연결 완료")
 
@@ -44,10 +45,13 @@ if prompt := st.chat_input("데이터에게 궁금한 점을 물어보세요"):
 
     with st.chat_message("assistant"):
         try:
-            # 404 에러를 피하기 위한 가장 단순한 호출
+            # 404 에러 방지를 위한 가장 단순한 호출 방식
             response = model.generate_content(f"{INSTRUCTION}\n\n질문: {prompt}")
             if response:
                 st.markdown(response.text)
                 st.session_state.messages.append({"role": "assistant", "content": response.text})
         except Exception as e:
+            # 에러 메시지를 더 구체적으로 파악하기 위한 처리
             st.error(f"분석 중 오류 발생: {e}")
+            if "404" in str(e):
+                st.info("💡 팁: API 키를 발급받은 Google AI Studio에서 'Gemini 1.5 Flash' 모델이 목록에 있는지 확인해보세요.")
