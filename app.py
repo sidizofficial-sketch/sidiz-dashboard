@@ -56,10 +56,15 @@ try:
     project_id = info['project_id']
     dataset_id = "analytics_487246344"
     table_path = f"{project_id}.{dataset_id}.events_*"
-    naver_keyword_table = f"{project_id}.{dataset_id}.naver_search_keyword"  # 네이버 검색 키워드 테이블
     
     INSTRUCTION = f"""
     당신은 SIDIZ의 BigQuery 데이터 분석가입니다.
+    
+    [중요: 실제 데이터만 사용]
+    - 절대 추측하지 마세요 (예: "업계 평균", "일반적으로", "보통")
+    - 비교할 때는 실제 데이터만 사용하세요
+    - 예: "T80: 2.3% vs T50: 3.1% (T50이 0.8%p 높음)"
+    - 데이터가 없으면 "데이터 없음"이라고 명시하세요
     
     [중요: 간단한 SQL만 작성하세요]
     - 복잡한 서브쿼리, CTE, 윈도우 함수는 사용하지 마세요
@@ -92,28 +97,87 @@ try:
     ```
     
     [제품 분석 예시]
-    T50 제품 페이지 분석:
+    제품 데이터는 items 배열에서 가져옵니다:
+    
+    ```sql
+    -- T50 제품 구매 분석
+    SELECT
+      event_date,
+      items.item_name as product,
+      COUNT(DISTINCT user_pseudo_id) as buyers,
+      SUM(items.quantity) as total_quantity,
+      ROUND(SUM(items.price * items.quantity), 0) as revenue
+    FROM `{table_path}`
+    LEFT JOIN UNNEST(items) as items
+    WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+      AND event_name = 'purchase'
+      AND items.item_name = 'T50'
+    GROUP BY event_date, items.item_name
+    ORDER BY event_date DESC
+    LIMIT 100
+    ```
+    
+    제품 페이지 방문 분석 (page_location 사용):
     
     ```sql
     SELECT
       event_date,
-      COUNT(DISTINCT user_pseudo_id) as users
+      COUNT(DISTINCT user_pseudo_id) as visitors
     FROM `{table_path}`
     WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
-      AND (
-        (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%T50%'
-        OR (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_title') LIKE '%T50%'
-      )
+      AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%/products/T50%'
     GROUP BY event_date
     ORDER BY event_date DESC
     LIMIT 100
     ```
     
+    [제품 비교 분석 예시]
+    사용자가 "T80 구매율은?"이라고 물으면, items.item_name으로 제품별 비교:
+    
+    ```sql
+    WITH product_visitors AS (
+      SELECT 
+        items.item_name as product,
+        COUNT(DISTINCT user_pseudo_id) as visitors
+      FROM `{table_path}`
+      LEFT JOIN UNNEST(items) as items
+      WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
+        AND event_name IN ('view_item', 'add_to_cart', 'purchase')
+        AND items.item_name IN ('T50', 'T80', 'T100')
+      GROUP BY items.item_name
+    ),
+    product_buyers AS (
+      SELECT 
+        items.item_name as product,
+        COUNT(DISTINCT user_pseudo_id) as buyers
+      FROM `{table_path}`
+      LEFT JOIN UNNEST(items) as items
+      WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
+        AND event_name = 'purchase'
+        AND items.item_name IN ('T50', 'T80', 'T100')
+      GROUP BY items.item_name
+    )
+    SELECT 
+      v.product,
+      v.visitors,
+      COALESCE(b.buyers, 0) as buyers,
+      ROUND(SAFE_DIVIDE(COALESCE(b.buyers, 0) * 100, v.visitors), 2) as conversion_rate
+    FROM product_visitors v
+    LEFT JOIN product_buyers b ON v.product = b.product
+    ORDER BY conversion_rate DESC
+    ```
+    
+    결과를 이렇게 표현:
+    "T80 구매율: 2.3%
+     vs T50: 3.1% (T50이 0.8%p 높음)
+     vs T100: 1.9% (T80이 0.4%p 높음)"
+    
     [SQL 작성 규칙]
     1. 반드시 ```sql 코드블록 안에 작성
-    2. 제품 필터링: event_params의 page_location 또는 page_title 사용
-    3. 날짜는 _TABLE_SUFFIX 사용
-    4. 항상 LIMIT 100 추가
+    2. **제품 데이터:** items.item_name 사용 (LEFT JOIN UNNEST(items) as items 필수)
+    3. **페이지 방문:** event_params의 page_location 사용
+    4. 날짜는 _TABLE_SUFFIX 사용
+    5. 항상 LIMIT 100 추가
     
     중요: 복잡한 분석이 필요하면 여러 개의 간단한 쿼리로 나누세요.
     """
@@ -124,56 +188,6 @@ except Exception as e:
 
 # 네이버 검색량 조회 함수
 # BigQuery 네이버 검색 키워드 분석
-def get_naver_search_from_bigquery(keywords, start_date, end_date):
-    """
-    BigQuery의 naver_search_keyword 테이블에서 검색량 조회
-    
-    Args:
-        keywords: 검색어 리스트
-        start_date: 시작일 (YYYY-MM-DD)
-        end_date: 종료일 (YYYY-MM-DD)
-    
-    Returns:
-        DataFrame with search data
-    """
-    try:
-        # 키워드 조건 생성
-        keyword_conditions = " OR ".join([f"keyword = '{k}'" for k in keywords])
-        
-        query = f"""
-        SELECT 
-            date,
-            keyword,
-            pc_count,
-            mo_count,
-            (pc_count + mo_count) as total_count,
-            category
-        FROM `{naver_keyword_table}`
-        WHERE date BETWEEN '{start_date}' AND '{end_date}'
-          AND ({keyword_conditions})
-        ORDER BY date DESC, total_count DESC
-        """
-        
-        df = client.query(query).to_dataframe()
-        
-        if df.empty:
-            return None, "해당 기간에 데이터가 없습니다."
-        
-        # 컬럼명 한글화
-        df = df.rename(columns={
-            'date': '날짜',
-            'keyword': '키워드',
-            'pc_count': 'PC검색량',
-            'mo_count': '모바일검색량',
-            'total_count': '총검색량',
-            'category': '카테고리'
-        })
-        
-        return df, None
-    
-    except Exception as e:
-        return None, f"조회 오류: {str(e)}"
-
 def get_naver_search_trend(keywords, start_date, end_date, time_unit='date'):
     """
     네이버 데이터랩 검색어 트렌드 API 호출
@@ -384,6 +398,80 @@ def get_naver_keyword_stats(keywords):
 
 # 3. UI 구성
 st.title("🪑 SIDIZ AI Intelligence Dashboard")
+
+# 핵심 KPI 대시보드 (상단 고정)
+st.markdown("### 📊 핵심 지표")
+
+# 전체 기간 KPI 조회
+try:
+    # 기본 기간 설정
+    if 'start_date' not in st.session_state:
+        from datetime import datetime, timedelta
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=30)
+        st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+        st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+    
+    # KPI 쿼리
+    kpi_query = f"""
+    WITH base_data AS (
+        SELECT 
+            COUNT(DISTINCT user_pseudo_id) as total_users,
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as purchasers,
+            SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END) as total_revenue,
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN event_timestamp END) as purchase_count
+        FROM `{table_path}`
+        WHERE _TABLE_SUFFIX BETWEEN '{st.session_state.get('start_date', '20240101')}' 
+          AND '{st.session_state.get('end_date', '20240131')}'
+    )
+    SELECT 
+        total_users,
+        purchasers,
+        ROUND(SAFE_DIVIDE(purchasers * 100, total_users), 2) as conversion_rate,
+        ROUND(total_revenue, 0) as total_revenue,
+        ROUND(SAFE_DIVIDE(total_revenue, purchase_count), 0) as avg_order_value
+    FROM base_data
+    """
+    
+    kpi_df = client.query(kpi_query).to_dataframe()
+    
+    if not kpi_df.empty:
+        kpi_row = kpi_df.iloc[0]
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(
+                "총 방문자",
+                f"{int(kpi_row['total_users']):,}명",
+                help="선택된 기간의 고유 방문자 수"
+            )
+        
+        with col2:
+            st.metric(
+                "전환율",
+                f"{kpi_row['conversion_rate']:.1f}%",
+                help="구매한 방문자 / 전체 방문자"
+            )
+        
+        with col3:
+            st.metric(
+                "총 매출",
+                f"₩{int(kpi_row['total_revenue']/1000000):,}M",
+                help="전체 구매 매출"
+            )
+        
+        with col4:
+            st.metric(
+                "평균 주문액",
+                f"₩{int(kpi_row['avg_order_value']):,}",
+                help="주문당 평균 금액"
+            )
+        
+        st.markdown("---")
+        
+except Exception as e:
+    st.info("💡 기간을 선택하면 핵심 지표가 표시됩니다.")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -623,11 +711,17 @@ WHERE _TABLE_SUFFIX BETWEEN '{temp_start}' AND '{temp_end}'
 
 {date_instruction}
 
+**중요 규칙:**
+1. 절대 추측하지 마세요 (예: "업계 평균", "일반적으로", "보통")
+2. 비교할 때는 반드시 실제 쿼리 결과만 사용
+3. 예: "T80: 2.3% vs T50: 3.1% (T50이 0.8%p 높음)" ← 실제 데이터
+4. 데이터가 없으면 "데이터 없음"이라고 명시
+
 반드시 다음 형식으로 답변하세요:
 
 1. 먼저 간단한 분석 설명 (2-3문장)
 2. 그 다음 반드시 ```sql 코드블록에 실행 가능한 BigQuery SQL 작성
-3. 마지막으로 예상 결과 해석
+3. 마지막으로 예상 결과 해석 (실제 데이터 기반만)
 
 예시:
 매출을 분석하겠습니다.
@@ -1214,44 +1308,6 @@ secret_key = "xyz789secret"
         
         st.markdown("---")
     
-    # BigQuery 네이버 검색량 분석
-    st.markdown("### 🔍 네이버 검색량 분석")
-    st.info("💡 BigQuery의 naver_search_keyword 테이블 사용")
-    
-    # 검색어 입력
-    keywords_input_bq = st.text_input(
-        "검색어 입력 (쉼표로 구분)",
-        placeholder="예: T50,T80,의자",
-        key="bq_naver_keywords_input"
-    )
-    
-    # 기간 선택
-    col1, col2 = st.columns(2)
-    with col1:
-        naver_start_bq = st.date_input(
-            "시작일",
-            value=datetime.now() - timedelta(days=30),
-            key="bq_naver_start_date"
-        )
-    with col2:
-        naver_end_bq = st.date_input(
-            "종료일",
-            value=datetime.now(),
-            key="bq_naver_end_date"
-        )
-    
-    if st.button("🔍 검색량 조회", key="bq_naver_search_btn"):
-        if keywords_input_bq:
-            keywords = [k.strip() for k in keywords_input_bq.split(",") if k.strip()]
-            
-            st.session_state['bq_naver_keywords'] = keywords
-            st.session_state['bq_naver_start'] = naver_start_bq.strftime('%Y-%m-%d')
-            st.session_state['bq_naver_end'] = naver_end_bq.strftime('%Y-%m-%d')
-            st.session_state['show_bq_naver_result'] = True
-            st.rerun()
-        else:
-            st.warning("검색어를 입력하세요!")
-    
     st.markdown("---")
     st.markdown("### 📌 사용 가이드")
     
@@ -1810,112 +1866,6 @@ customer_id = "your_customer_id"
         # 결과 표시 후 플래그 제거
         del st.session_state['show_naver_result']
 
-
-# BigQuery 네이버 검색 결과 표시
-if 'show_bq_naver_result' in st.session_state and st.session_state['show_bq_naver_result']:
-    with st.chat_message("assistant"):
-        keywords = st.session_state['bq_naver_keywords']
-        start_date = st.session_state['bq_naver_start']
-        end_date = st.session_state['bq_naver_end']
-        
-        st.markdown("### 🔍 네이버 검색량 분석 (BigQuery)")
-        st.info(f"📅 분석 기간: {start_date} ~ {end_date} | 키워드: {', '.join(keywords)}")
-        
-        with st.spinner("BigQuery에서 데이터 조회 중..."):
-            df, error = get_naver_search_from_bigquery(keywords, start_date, end_date)
-            
-            if error:
-                st.error(f"❌ {error}")
-            elif df is not None and not df.empty:
-                # KPI 카드
-                st.markdown("#### 📊 핵심 지표")
-                cols = st.columns(len(keywords))
-                
-                for i, keyword in enumerate(keywords):
-                    if i < len(cols):
-                        with cols[i]:
-                            keyword_data = df[df['키워드'] == keyword]
-                            if not keyword_data.empty:
-                                total_search = keyword_data['총검색량'].sum()
-                                avg_search = keyword_data['총검색량'].mean()
-                                st.metric(
-                                    keyword,
-                                    f"{int(total_search):,}",
-                                    f"평균 {int(avg_search):,}"
-                                )
-                
-                st.markdown("---")
-                
-                # 검색량 추이 차트
-                fig = go.Figure()
-                
-                for keyword in keywords:
-                    keyword_data = df[df['키워드'] == keyword]
-                    if not keyword_data.empty:
-                        fig.add_trace(go.Scatter(
-                            x=keyword_data['날짜'],
-                            y=keyword_data['총검색량'],
-                            name=keyword,
-                            mode='lines+markers',
-                            line=dict(width=3),
-                            marker=dict(size=6)
-                        ))
-                
-                fig.update_layout(
-                    title='검색량 추이',
-                    xaxis=dict(title='날짜'),
-                    yaxis=dict(title='검색량'),
-                    hovermode='x unified',
-                    height=450
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # PC vs 모바일 비교
-                st.markdown("#### 📱 디바이스별 검색량")
-                
-                device_fig = go.Figure()
-                
-                for keyword in keywords:
-                    keyword_data = df[df['키워드'] == keyword].copy()
-                    if not keyword_data.empty:
-                        # PC
-                        device_fig.add_trace(go.Bar(
-                            name=f'{keyword} (PC)',
-                            x=keyword_data['날짜'],
-                            y=keyword_data['PC검색량'],
-                            text=keyword_data['PC검색량'],
-                            textposition='auto',
-                        ))
-                        # 모바일
-                        device_fig.add_trace(go.Bar(
-                            name=f'{keyword} (모바일)',
-                            x=keyword_data['날짜'],
-                            y=keyword_data['모바일검색량'],
-                            text=keyword_data['모바일검색량'],
-                            textposition='auto',
-                        ))
-                
-                device_fig.update_layout(
-                    title='PC vs 모바일 검색량',
-                    xaxis=dict(title='날짜'),
-                    yaxis=dict(title='검색량'),
-                    barmode='group',
-                    height=400
-                )
-                
-                st.plotly_chart(device_fig, use_container_width=True)
-                
-                # 상세 데이터
-                with st.expander("📋 상세 데이터 보기"):
-                    st.dataframe(df, use_container_width=True)
-                
-                st.success("✅ 검색량 조회 완료!")
-            else:
-                st.warning("데이터가 없습니다.")
-        
-        # 결과 표시 후 플래그 제거
-        del st.session_state['show_bq_naver_result']
 
 
 # 빠른 쿼리 실행
