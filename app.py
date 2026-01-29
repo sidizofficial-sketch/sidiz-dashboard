@@ -267,8 +267,14 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
     
     with st.chat_message("assistant"):
         try:
-            # 네이버 검색량 질문 감지
-            if "네이버" in prompt and ("검색량" in prompt or "검색" in prompt or "키워드" in prompt):
+            # 네이버 검색량 질문 감지 (개선)
+            naver_keywords_detected = (
+                ("네이버" in prompt and ("검색량" in prompt or "검색" in prompt or "키워드" in prompt))
+                or ("검색량" in prompt and "비교" in prompt and any(keyword in prompt for keyword in ["T50", "T80", "의자", "책상"]))
+                or ("검색" in prompt and "순위" in prompt)
+            )
+            
+            if naver_keywords_detected:
                 # 키워드 추출 시도
                 keywords = []
                 if "T50" in prompt or "t50" in prompt:
@@ -283,8 +289,28 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
                 # 키워드가 없으면 사용자에게 요청
                 if not keywords:
                     st.info("🔍 **네이버 검색 분석**을 요청하셨습니다!")
-                    st.markdown("사이드바의 '🔍 네이버 검색 분석' 섹션에서 검색어를 입력해주세요.")
-                    st.markdown("**사용 방법:**")
+                    
+                    # 빠른 버튼 제공
+                    st.markdown("### 💡 빠른 실행")
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        if st.button("🔍 T50 vs T80 비교", key="quick_t50_t80"):
+                            st.session_state['naver_api_type'] = 'keyword_stats'
+                            st.session_state['naver_keywords'] = ['T50', 'T80']
+                            st.session_state['show_naver_result'] = True
+                            st.rerun()
+                    
+                    with col2:
+                        if st.button("🔍 의자 키워드 분석", key="quick_chair"):
+                            st.session_state['naver_api_type'] = 'keyword_stats'
+                            st.session_state['naver_keywords'] = ['의자', '사무용의자', '게이밍의자']
+                            st.session_state['show_naver_result'] = True
+                            st.rerun()
+                    
+                    st.markdown("---")
+                    st.markdown("### 📝 또는 직접 입력")
+                    st.markdown("사이드바의 '🔍 네이버 검색 분석' 섹션에서:")
                     st.markdown("1. API 선택: 데이터랩(트렌드) 또는 검색광고(통계)")
                     st.markdown("2. 검색어 입력 (예: T50,T80,의자)")
                     st.markdown("3. 조회 버튼 클릭")
@@ -436,8 +462,7 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
                     else:
                         temp_start = st.session_state['start_date']
                         temp_end = st.session_state['end_date']
-                        if not period_detected:
-                            st.info(f"📅 설정된 분석 기간: {st.session_state['period_label']}")
+                        # 기간 정보는 한 번만 표시하므로 중복 제거
                     
                     with st.spinner("AI 엔진 분석 중..."):
                         # 프롬프트 생성 (기간 설정 여부에 따라 다르게)
@@ -550,10 +575,12 @@ ORDER BY date DESC
                             # 예외 발생시 여기서 종료 (나머지 코드 실행 안함)
                             raise gemini_error
                     
-                    # 인사이트 섹션
-                    st.markdown("### 💡 AI 인사이트 요약")
+                    # 인사이트 섹션 (간결하게)
+                    st.markdown("### 💡 AI 분석 요약")
                     insight = re.sub(r"```sql.*?```", "", answer, flags=re.DOTALL)
-                    st.info(insight.strip())
+                    # 인사이트를 간결하게 표시 (최대 300자)
+                    short_insight = insight.strip()[:300] + "..." if len(insight.strip()) > 300 else insight.strip()
+                    st.info(short_insight)
                     
                     # SQL 추출 및 실행 (여러 패턴 시도)
                     sql_patterns = [
@@ -571,8 +598,8 @@ ORDER BY date DESC
                 
                 if sql_query:
                     
-                    # SQL 쿼리 먼저 표시 (디버깅용)
-                    with st.expander("🔍 생성된 SQL 쿼리 확인", expanded=True):
+                    # SQL 쿼리 표시 (기본 접힌 상태)
+                    with st.expander("🔍 생성된 SQL 쿼리 확인", expanded=False):
                         st.code(sql_query, language='sql')
                         
                         # SQL 복사 버튼
@@ -642,6 +669,8 @@ ORDER BY date DESC
                             'date': '날짜',
                             'users': '사용자',
                             'distinct_users': '사용자',
+                            't50_users': 'T50 사용자',
+                            't80_users': 'T80 사용자',
                             'purchases': '구매',
                             'page_views': '페이지뷰',
                             'revenue': '매출',
@@ -654,8 +683,7 @@ ORDER BY date DESC
                         }
                         df_display = df.rename(columns=column_rename)
                         
-                        # 데이터 테이블 표시
-                        st.markdown("### 📊 데이터 분석 결과")
+                        # 데이터 테이블 표시 (헤더 없이)
                         st.dataframe(df_display, use_container_width=True)
                         
                         # KPI 카드
@@ -938,6 +966,22 @@ with st.sidebar:
     
     # 빠른 분석 템플릿
     st.markdown("#### 🚀 빠른 분석")
+    
+    # 네이버 검색량 빠른 비교 버튼
+    if naver_client_id or naver_ad_api_key:
+        if st.button("🔍 T50 vs T80 검색량 비교"):
+            st.session_state['naver_api_type'] = 'keyword_stats'
+            st.session_state['naver_keywords'] = ['T50', 'T80']
+            st.session_state['show_naver_result'] = True
+            st.rerun()
+        
+        if st.button("🔍 의자 키워드 검색량"):
+            st.session_state['naver_api_type'] = 'keyword_stats'
+            st.session_state['naver_keywords'] = ['의자', '사무용의자', '게이밍의자']
+            st.session_state['show_naver_result'] = True
+            st.rerun()
+        
+        st.markdown("---")
     
     if st.button("📅 사용자 추이 분석"):
         # 기간이 설정되지 않았으면 기본값 사용
