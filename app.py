@@ -18,10 +18,19 @@ try:
     client = bigquery.Client.from_service_account_info(info, location="asia-northeast3")
     
     if "gemini" in st.secrets:
-        genai.configure(api_key=st.secrets["gemini"]["api_key"])
-        model_list = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        target = next((m for m in model_list if "1.5-flash" in m), model_list[0])
-        model = genai.GenerativeModel(target)
+        try:
+            genai.configure(api_key=st.secrets["gemini"]["api_key"])
+            model_list = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            target = next((m for m in model_list if "1.5-flash" in m), model_list[0])
+            model = genai.GenerativeModel(target)
+            gemini_available = True
+        except Exception as e:
+            st.warning(f"⚠️ Gemini API 사용 불가: {e}")
+            model = None
+            gemini_available = False
+    else:
+        model = None
+        gemini_available = False
     
     # 네이버 API 설정
     naver_client_id = None
@@ -374,66 +383,81 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
             
             else:
                 # 일반 데이터 분석 (BigQuery)
-                # 날짜 키워드 감지 및 기간 자동 설정
-                import re
-                period_detected = False
                 
-                if "최근" in prompt or "지난" in prompt:
-                    # 숫자 추출
-                    numbers = re.findall(r'\d+', prompt)
-                    if numbers:
-                        days = int(numbers[0])
-                        
+                # Gemini 사용 불가시 안내
+                if not gemini_available:
+                    st.warning("⚠️ AI 분석 기능을 사용할 수 없습니다.")
+                    st.info("💡 **대신 이렇게 이용하세요:**")
+                    st.markdown("1. **사이드바 버튼 사용**: 📅 사용자 추이 분석, 💰 매출 추이 분석, 🪑 T50 제품 종합 분석")
+                    st.markdown("2. **네이버 검색 분석**: 사이드바 → 🔍 네이버 검색 분석")
+                    st.markdown("3. **직접 SQL 작성**: BigQuery 콘솔에서 직접 쿼리 실행")
+                    
+                    st.session_state.messages.append({
+                        "role": "assistant", 
+                        "content": "AI 분석 기능을 사용할 수 없습니다. 사이드바의 빠른 분석 버튼을 이용해주세요."
+                    })
+                    
+                else:
+                    # 날짜 키워드 감지 및 기간 자동 설정
+                    import re
+                    period_detected = False
+                    
+                    if "최근" in prompt or "지난" in prompt:
+                        # 숫자 추출
+                        numbers = re.findall(r'\d+', prompt)
+                        if numbers:
+                            days = int(numbers[0])
+                            
+                            from datetime import datetime, timedelta
+                            end_date = datetime.now()
+                            start_date = end_date - timedelta(days=days)
+                            
+                            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+                            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+                            st.session_state['period_label'] = f"최근 {days}일"
+                            
+                            st.info(f"📅 분석 기간: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} ({days}일)")
+                            period_detected = True
+                    
+                    # 기간이 설정되지 않은 경우 (선택 안함 상태)
+                    use_period_in_sql = 'start_date' in st.session_state
+                    
+                    # SQL에 사용할 임시 기간 설정
+                    if not use_period_in_sql:
                         from datetime import datetime, timedelta
                         end_date = datetime.now()
-                        start_date = end_date - timedelta(days=days)
+                        start_date = end_date - timedelta(days=7)
                         
-                        st.session_state['start_date'] = start_date.strftime('%Y%m%d')
-                        st.session_state['end_date'] = end_date.strftime('%Y%m%d')
-                        st.session_state['period_label'] = f"최근 {days}일"
+                        temp_start = start_date.strftime('%Y%m%d')
+                        temp_end = end_date.strftime('%Y%m%d')
                         
-                        st.info(f"📅 분석 기간: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} ({days}일)")
-                        period_detected = True
-                
-                # 기간이 설정되지 않은 경우 (선택 안함 상태)
-                use_period_in_sql = 'start_date' in st.session_state
-                
-                # SQL에 사용할 임시 기간 설정
-                if not use_period_in_sql:
-                    from datetime import datetime, timedelta
-                    end_date = datetime.now()
-                    start_date = end_date - timedelta(days=7)
+                        if not period_detected:
+                            st.info(f"💡 AI가 질문에 맞춰 기간을 자동 설정합니다")
+                    else:
+                        temp_start = st.session_state['start_date']
+                        temp_end = st.session_state['end_date']
+                        if not period_detected:
+                            st.info(f"📅 설정된 분석 기간: {st.session_state['period_label']}")
                     
-                    temp_start = start_date.strftime('%Y%m%d')
-                    temp_end = end_date.strftime('%Y%m%d')
-                    
-                    if not period_detected:
-                        st.info(f"💡 AI가 질문에 맞춰 기간을 자동 설정합니다")
-                else:
-                    temp_start = st.session_state['start_date']
-                    temp_end = st.session_state['end_date']
-                    if not period_detected:
-                        st.info(f"📅 설정된 분석 기간: {st.session_state['period_label']}")
-                
-                with st.spinner("AI 엔진 분석 중..."):
-                    # 프롬프트 생성 (기간 설정 여부에 따라 다르게)
-                    if use_period_in_sql:
-                        # 사용자가 기간을 명시적으로 선택한 경우
-                        date_instruction = f"""
+                    with st.spinner("AI 엔진 분석 중..."):
+                        # 프롬프트 생성 (기간 설정 여부에 따라 다르게)
+                        if use_period_in_sql:
+                            # 사용자가 기간을 명시적으로 선택한 경우
+                            date_instruction = f"""
 중요: WHERE 절에 다음 날짜 조건을 반드시 포함하세요:
 WHERE _TABLE_SUFFIX BETWEEN '{temp_start}' AND '{temp_end}'
 """
-                    else:
-                        # 선택 안함 - AI가 자유롭게 판단
-                        date_instruction = f"""
+                        else:
+                            # 선택 안함 - AI가 자유롭게 판단
+                            date_instruction = f"""
 날짜 필터링:
 - 사용자가 "최근 N일" 같은 키워드를 사용하면 해당 기간 사용
 - 그 외에는 질문 맥락에 맞는 적절한 기간 사용
 - 기본 예시: WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
 - 또는: WHERE _TABLE_SUFFIX BETWEEN '{temp_start}' AND '{temp_end}'
 """
-                    
-                    enhanced_prompt = f"""
+                        
+                        enhanced_prompt = f"""
 {INSTRUCTION}
 
 사용자 질문: {prompt}
@@ -462,18 +486,18 @@ ORDER BY date DESC
 
 이 쿼리는 지정된 기간의 일별 매출을 보여줍니다.
 """
+                        
+                        response = model.generate_content(enhanced_prompt)
+                        answer = response.text
                     
-                    response = model.generate_content(enhanced_prompt)
-                    answer = response.text
-                
-                # 인사이트 섹션
-                st.markdown("### 💡 AI 인사이트 요약")
-                insight = re.sub(r"```sql.*?```", "", answer, flags=re.DOTALL)
-                st.info(insight.strip())
-                
-                # SQL 추출 및 실행 (여러 패턴 시도)
-                sql_patterns = [
-                    r"```sql\s*(.*?)\s*```",  # 기본 sql 블록
+                    # 인사이트 섹션
+                    st.markdown("### 💡 AI 인사이트 요약")
+                    insight = re.sub(r"```sql.*?```", "", answer, flags=re.DOTALL)
+                    st.info(insight.strip())
+                    
+                    # SQL 추출 및 실행 (여러 패턴 시도)
+                    sql_patterns = [
+                        r"```sql\s*(.*?)\s*```",  # 기본 sql 블록
                     r"```SQL\s*(.*?)\s*```",  # 대문자 SQL
                     r"```\s*(SELECT.*?)\s*```",  # SELECT로 시작하는 쿼리
                 ]
@@ -904,7 +928,7 @@ ORDER BY date DESC
         st.session_state['query_type'] = 'revenue_trend'
         st.rerun()
     
-    if st.button("🪑 T50 제품 분석"):
+    if st.button("🪑 T50 제품 종합 분석"):
         # 기간이 설정되지 않았으면 기본값 사용
         if 'start_date' not in st.session_state:
             from datetime import datetime, timedelta
@@ -914,24 +938,8 @@ ORDER BY date DESC
             st.session_state['end_date'] = end_date.strftime('%Y%m%d')
             st.session_state['period_label'] = "최근 30일 (기본)"
         
-        template_query = f"""
-SELECT
-  PARSE_DATE('%Y%m%d', event_date) as date,
-  COUNT(DISTINCT user_pseudo_id) as users,
-  COUNTIF(event_name = 'page_view') as page_views,
-  COUNTIF(event_name = 'purchase') as purchases
-FROM `{table_path}`
-WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
-  AND (
-    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%T50%'
-    OR (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_title') LIKE '%T50%'
-  )
-GROUP BY date
-ORDER BY date DESC
-LIMIT 100
-"""
-        st.session_state['quick_query'] = template_query
-        st.session_state['query_type'] = 't50_analysis'
+        st.session_state['show_product_analysis'] = True
+        st.session_state['product_name'] = 'T50'
         st.rerun()
     
     st.markdown("---")
@@ -1016,7 +1024,332 @@ LIMIT 100
             del st.session_state['quick_query']
         if 'show_naver_result' in st.session_state:
             del st.session_state['show_naver_result']
+        if 'show_product_analysis' in st.session_state:
+            del st.session_state['show_product_analysis']
         st.rerun()
+
+# 제품 종합 분석 대시보드
+if 'show_product_analysis' in st.session_state and st.session_state['show_product_analysis']:
+    product_name = st.session_state.get('product_name', 'T50')
+    start_date = st.session_state['start_date']
+    end_date = st.session_state['end_date']
+    period_label = st.session_state.get('period_label', f"{start_date} ~ {end_date}")
+    
+    with st.chat_message("assistant"):
+        st.markdown(f"### 🪑 {product_name} 제품 종합 분석")
+        st.info(f"📅 분석 기간: {period_label}")
+        
+        with st.spinner("데이터 분석 중..."):
+            try:
+                # 1. 정확한 제품명 목록 추출
+                product_query = f"""
+SELECT DISTINCT
+  item.item_name as product_name,
+  COUNT(*) as event_count
+FROM `{table_path}`,
+  UNNEST(items) as item
+WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+  AND item.item_name LIKE '%{product_name}%'
+GROUP BY item.item_name
+ORDER BY event_count DESC
+LIMIT 10
+"""
+                product_df = client.query(product_query).to_dataframe()
+                
+                if product_df.empty:
+                    st.warning(f"⚠️ '{product_name}' 관련 제품을 찾을 수 없습니다.")
+                else:
+                    # 제품 선택
+                    st.markdown("#### 📦 검색된 제품")
+                    selected_products = st.multiselect(
+                        "분석할 제품 선택",
+                        product_df['product_name'].tolist(),
+                        default=product_df['product_name'].tolist()[:3]
+                    )
+                    
+                    if not selected_products:
+                        st.warning("최소 1개 이상의 제품을 선택하세요.")
+                    else:
+                        product_condition = " OR ".join([f"item.item_name = '{p}'" for p in selected_products])
+                        
+                        # 2. 종합 분석 쿼리
+                        analysis_query = f"""
+WITH product_events AS (
+  SELECT
+    user_pseudo_id,
+    event_name,
+    event_date,
+    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') as page_url,
+    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'session_id') as session_id,
+    geo.country,
+    device.category as device_category,
+    traffic_source.source as traffic_source,
+    traffic_source.medium as traffic_medium,
+    ecommerce.purchase_revenue as revenue,
+    item.item_name,
+    item.quantity
+  FROM `{table_path}`,
+    UNNEST(items) as item
+  WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+    AND ({product_condition})
+)
+SELECT
+  -- 기본 지표
+  COUNT(DISTINCT user_pseudo_id) as total_visitors,
+  COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as total_buyers,
+  COUNTIF(event_name = 'purchase') as total_purchases,
+  
+  -- 매출 지표
+  SUM(CASE WHEN event_name = 'purchase' THEN revenue END) as total_revenue,
+  AVG(CASE WHEN event_name = 'purchase' THEN revenue END) as avg_order_value,
+  SUM(CASE WHEN event_name = 'purchase' THEN quantity END) as total_quantity,
+  AVG(CASE WHEN event_name = 'purchase' THEN quantity END) as avg_quantity_per_order,
+  
+  -- 전환율
+  ROUND(COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) * 100.0 / COUNT(DISTINCT user_pseudo_id), 2) as conversion_rate,
+  
+  -- 디바이스
+  COUNTIF(device_category = 'mobile') as mobile_users,
+  COUNTIF(device_category = 'desktop') as desktop_users,
+  COUNTIF(device_category = 'tablet') as tablet_users
+FROM product_events
+"""
+                        
+                        main_df = client.query(analysis_query).to_dataframe()
+                        
+                        if not main_df.empty:
+                            row = main_df.iloc[0]
+                            
+                            # KPI 카드
+                            st.markdown("---")
+                            st.markdown("#### 📊 핵심 지표")
+                            
+                            col1, col2, col3, col4 = st.columns(4)
+                            
+                            with col1:
+                                st.metric(
+                                    "페이지 방문자",
+                                    f"{int(row['total_visitors']):,}명",
+                                    help="제품 페이지를 방문한 순 사용자 수"
+                                )
+                            
+                            with col2:
+                                st.metric(
+                                    "구매자",
+                                    f"{int(row['total_buyers']):,}명",
+                                    help="실제로 구매한 순 사용자 수"
+                                )
+                            
+                            with col3:
+                                st.metric(
+                                    "구매 건수",
+                                    f"{int(row['total_purchases']):,}건",
+                                    help="총 구매 트랜잭션 수 (중복 구매 포함)"
+                                )
+                            
+                            with col4:
+                                st.metric(
+                                    "전환율",
+                                    f"{row['conversion_rate']:.2f}%",
+                                    help="구매자 수 / 방문자 수"
+                                )
+                            
+                            col5, col6, col7, col8 = st.columns(4)
+                            
+                            with col5:
+                                st.metric(
+                                    "총 매출",
+                                    f"₩{int(row['total_revenue']):,}" if pd.notna(row['total_revenue']) else "N/A"
+                                )
+                            
+                            with col6:
+                                st.metric(
+                                    "평균 주문 금액",
+                                    f"₩{int(row['avg_order_value']):,}" if pd.notna(row['avg_order_value']) else "N/A"
+                                )
+                            
+                            with col7:
+                                st.metric(
+                                    "총 판매 수량",
+                                    f"{int(row['total_quantity']):,}개" if pd.notna(row['total_quantity']) else "N/A"
+                                )
+                            
+                            with col8:
+                                st.metric(
+                                    "평균 구매 수량",
+                                    f"{row['avg_quantity_per_order']:.1f}개" if pd.notna(row['avg_quantity_per_order']) else "N/A"
+                                )
+                            
+                            st.markdown("---")
+                            
+                            # 상세 분석
+                            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                                "👥 인구통계", "🌐 유입경로", "💰 매출분석", "📱 이용행태", "📈 전환율"
+                            ])
+                            
+                            with tab1:
+                                st.markdown("#### 👥 인구통계학적 정보")
+                                # 디바이스 분포
+                                device_data = {
+                                    '디바이스': ['모바일', '데스크톱', '태블릿'],
+                                    '사용자수': [
+                                        int(row['mobile_users']),
+                                        int(row['desktop_users']),
+                                        int(row['tablet_users'])
+                                    ]
+                                }
+                                device_df = pd.DataFrame(device_data)
+                                
+                                fig_device = px.pie(device_df, names='디바이스', values='사용자수', 
+                                                   title='디바이스별 사용자 분포')
+                                st.plotly_chart(fig_device, use_container_width=True)
+                            
+                            with tab2:
+                                st.markdown("#### 🌐 유입 경로 분석")
+                                
+                                traffic_query = f"""
+SELECT
+  traffic_source.source as source,
+  traffic_source.medium as medium,
+  COUNT(DISTINCT user_pseudo_id) as users,
+  COUNTIF(event_name = 'purchase') as purchases
+FROM `{table_path}`,
+  UNNEST(items) as item
+WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+  AND ({product_condition})
+GROUP BY source, medium
+ORDER BY users DESC
+LIMIT 10
+"""
+                                traffic_df = client.query(traffic_query).to_dataframe()
+                                
+                                if not traffic_df.empty:
+                                    traffic_df['유입경로'] = traffic_df['source'] + ' / ' + traffic_df['medium']
+                                    
+                                    fig_traffic = px.bar(traffic_df, x='유입경로', y='users',
+                                                        title='유입 경로별 방문자 수',
+                                                        labels={'users': '방문자 수'})
+                                    st.plotly_chart(fig_traffic, use_container_width=True)
+                                    
+                                    st.dataframe(traffic_df, use_container_width=True)
+                            
+                            with tab3:
+                                st.markdown("#### 💰 매출 및 구매 분석")
+                                
+                                # 일별 매출 추이
+                                daily_query = f"""
+SELECT
+  event_date,
+  COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as buyers,
+  COUNTIF(event_name = 'purchase') as purchases,
+  SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END) as revenue
+FROM `{table_path}`,
+  UNNEST(items) as item
+WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+  AND ({product_condition})
+GROUP BY event_date
+ORDER BY event_date
+"""
+                                daily_df = client.query(daily_query).to_dataframe()
+                                
+                                if not daily_df.empty:
+                                    daily_df['날짜'] = pd.to_datetime(daily_df['event_date'])
+                                    
+                                    fig_daily = go.Figure()
+                                    fig_daily.add_trace(go.Scatter(
+                                        x=daily_df['날짜'],
+                                        y=daily_df['revenue'],
+                                        name='매출',
+                                        line=dict(color='#1f77b4', width=3)
+                                    ))
+                                    fig_daily.update_layout(
+                                        title='일별 매출 추이',
+                                        xaxis_title='날짜',
+                                        yaxis_title='매출 (₩)',
+                                        height=400
+                                    )
+                                    st.plotly_chart(fig_daily, use_container_width=True)
+                            
+                            with tab4:
+                                st.markdown("#### 📱 서비스 이용 행태")
+                                
+                                # 제품별 상세
+                                product_detail_df = pd.DataFrame({
+                                    '제품명': selected_products,
+                                    '선택됨': ['✓'] * len(selected_products)
+                                })
+                                st.dataframe(product_detail_df, use_container_width=True)
+                                
+                                st.info("💡 페이지 탐색 퍼널 및 제품 비교 데이터는 추가 event_params 분석이 필요합니다.")
+                            
+                            with tab5:
+                                st.markdown("#### 📈 전환율 비교")
+                                
+                                # 전체 평균 전환율
+                                avg_conversion_query = f"""
+SELECT
+  ROUND(COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) * 100.0 / COUNT(DISTINCT user_pseudo_id), 2) as avg_conversion
+FROM `{table_path}`
+WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+"""
+                                avg_df = client.query(avg_conversion_query).to_dataframe()
+                                
+                                if not avg_df.empty:
+                                    avg_conversion = avg_df.iloc[0]['avg_conversion']
+                                    product_conversion = row['conversion_rate']
+                                    
+                                    comparison_df = pd.DataFrame({
+                                        '구분': [f'{product_name} 제품', '전체 평균'],
+                                        '전환율': [product_conversion, avg_conversion]
+                                    })
+                                    
+                                    fig_comparison = px.bar(comparison_df, x='구분', y='전환율',
+                                                           title='전환율 비교',
+                                                           text='전환율',
+                                                           color='구분')
+                                    fig_comparison.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
+                                    st.plotly_chart(fig_comparison, use_container_width=True)
+                                    
+                                    if product_conversion > avg_conversion:
+                                        st.success(f"✅ {product_name} 제품의 전환율이 평균보다 {product_conversion - avg_conversion:.2f}%p 높습니다!")
+                                    else:
+                                        st.warning(f"⚠️ {product_name} 제품의 전환율이 평균보다 {avg_conversion - product_conversion:.2f}%p 낮습니다.")
+                            
+                            # 종합 인사이트
+                            st.markdown("---")
+                            st.markdown("### 💡 AI 인사이트 요약")
+                            
+                            insights = f"""
+**{product_name} 제품 분석 요약** ({period_label})
+
+**핵심 지표:**
+- 총 방문자: {int(row['total_visitors']):,}명
+- 구매자: {int(row['total_buyers']):,}명 (전환율 {row['conversion_rate']:.2f}%)
+- 총 구매 건수: {int(row['total_purchases']):,}건
+- 총 매출: ₩{int(row['total_revenue']):,} (평균 주문금액 ₩{int(row['avg_order_value']):,})
+
+**주요 발견사항:**
+1. **인구통계:** 모바일 사용자가 {int(row['mobile_users'] / row['total_visitors'] * 100)}% 를 차지
+2. **구매 행태:** 평균 {row['avg_quantity_per_order']:.1f}개 구매
+3. **전환율:** 전체 평균 대비 {'높은' if row['conversion_rate'] > avg_conversion else '낮은'} 전환율
+
+**제안사항:**
+- 모바일 최적화 {'강화' if row['mobile_users'] > row['desktop_users'] else '필요'}
+- 전환율 개선을 위한 {'장바구니 이탈 방지' if row['conversion_rate'] < avg_conversion else 'VIP 고객 관리'} 전략 수립
+"""
+                            st.info(insights)
+                        
+                        else:
+                            st.warning("분석 데이터가 없습니다.")
+                        
+            except Exception as e:
+                st.error(f"❌ 분석 오류: {str(e)}")
+                import traceback
+                with st.expander("상세 오류"):
+                    st.code(traceback.format_exc())
+        
+        # 분석 완료 후 플래그 제거
+        del st.session_state['show_product_analysis']
 
 # 네이버 검색량 결과 표시
 if 'show_naver_result' in st.session_state and st.session_state['show_naver_result']:
