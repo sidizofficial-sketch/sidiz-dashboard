@@ -55,7 +55,8 @@ try:
     
     project_id = info['project_id']
     dataset_id = "analytics_487246344"
-    table_path = f"{project_id}.{dataset_id}.events_*"  # 수정: 백틱(`) → 따옴표(")
+    table_path = f"{project_id}.{dataset_id}.events_*"
+    naver_keyword_table = f"{project_id}.{dataset_id}.naver_search_keyword"  # 네이버 검색 키워드 테이블
     
     INSTRUCTION = f"""
     당신은 SIDIZ의 BigQuery 데이터 분석가입니다.
@@ -122,6 +123,57 @@ except Exception as e:
     st.stop()
 
 # 네이버 검색량 조회 함수
+# BigQuery 네이버 검색 키워드 분석
+def get_naver_search_from_bigquery(keywords, start_date, end_date):
+    """
+    BigQuery의 naver_search_keyword 테이블에서 검색량 조회
+    
+    Args:
+        keywords: 검색어 리스트
+        start_date: 시작일 (YYYY-MM-DD)
+        end_date: 종료일 (YYYY-MM-DD)
+    
+    Returns:
+        DataFrame with search data
+    """
+    try:
+        # 키워드 조건 생성
+        keyword_conditions = " OR ".join([f"keyword = '{k}'" for k in keywords])
+        
+        query = f"""
+        SELECT 
+            date,
+            keyword,
+            pc_count,
+            mo_count,
+            (pc_count + mo_count) as total_count,
+            category
+        FROM `{naver_keyword_table}`
+        WHERE date BETWEEN '{start_date}' AND '{end_date}'
+          AND ({keyword_conditions})
+        ORDER BY date DESC, total_count DESC
+        """
+        
+        df = client.query(query).to_dataframe()
+        
+        if df.empty:
+            return None, "해당 기간에 데이터가 없습니다."
+        
+        # 컬럼명 한글화
+        df = df.rename(columns={
+            'date': '날짜',
+            'keyword': '키워드',
+            'pc_count': 'PC검색량',
+            'mo_count': '모바일검색량',
+            'total_count': '총검색량',
+            'category': '카테고리'
+        })
+        
+        return df, None
+    
+    except Exception as e:
+        return None, f"조회 오류: {str(e)}"
+
 def get_naver_search_trend(keywords, start_date, end_date, time_unit='date'):
     """
     네이버 데이터랩 검색어 트렌드 API 호출
@@ -1162,6 +1214,45 @@ secret_key = "xyz789secret"
         
         st.markdown("---")
     
+    # BigQuery 네이버 검색량 분석
+    st.markdown("### 🔍 네이버 검색량 분석")
+    st.info("💡 BigQuery의 naver_search_keyword 테이블 사용")
+    
+    # 검색어 입력
+    keywords_input_bq = st.text_input(
+        "검색어 입력 (쉼표로 구분)",
+        placeholder="예: T50,T80,의자",
+        key="bq_naver_keywords_input"
+    )
+    
+    # 기간 선택
+    col1, col2 = st.columns(2)
+    with col1:
+        naver_start_bq = st.date_input(
+            "시작일",
+            value=datetime.now() - timedelta(days=30),
+            key="bq_naver_start_date"
+        )
+    with col2:
+        naver_end_bq = st.date_input(
+            "종료일",
+            value=datetime.now(),
+            key="bq_naver_end_date"
+        )
+    
+    if st.button("🔍 검색량 조회", key="bq_naver_search_btn"):
+        if keywords_input_bq:
+            keywords = [k.strip() for k in keywords_input_bq.split(",") if k.strip()]
+            
+            st.session_state['bq_naver_keywords'] = keywords
+            st.session_state['bq_naver_start'] = naver_start_bq.strftime('%Y-%m-%d')
+            st.session_state['bq_naver_end'] = naver_end_bq.strftime('%Y-%m-%d')
+            st.session_state['show_bq_naver_result'] = True
+            st.rerun()
+        else:
+            st.warning("검색어를 입력하세요!")
+    
+    st.markdown("---")
     st.markdown("### 📌 사용 가이드")
     
     # 빠른 분석 템플릿
@@ -1718,6 +1809,113 @@ customer_id = "your_customer_id"
         
         # 결과 표시 후 플래그 제거
         del st.session_state['show_naver_result']
+
+
+# BigQuery 네이버 검색 결과 표시
+if 'show_bq_naver_result' in st.session_state and st.session_state['show_bq_naver_result']:
+    with st.chat_message("assistant"):
+        keywords = st.session_state['bq_naver_keywords']
+        start_date = st.session_state['bq_naver_start']
+        end_date = st.session_state['bq_naver_end']
+        
+        st.markdown("### 🔍 네이버 검색량 분석 (BigQuery)")
+        st.info(f"📅 분석 기간: {start_date} ~ {end_date} | 키워드: {', '.join(keywords)}")
+        
+        with st.spinner("BigQuery에서 데이터 조회 중..."):
+            df, error = get_naver_search_from_bigquery(keywords, start_date, end_date)
+            
+            if error:
+                st.error(f"❌ {error}")
+            elif df is not None and not df.empty:
+                # KPI 카드
+                st.markdown("#### 📊 핵심 지표")
+                cols = st.columns(len(keywords))
+                
+                for i, keyword in enumerate(keywords):
+                    if i < len(cols):
+                        with cols[i]:
+                            keyword_data = df[df['키워드'] == keyword]
+                            if not keyword_data.empty:
+                                total_search = keyword_data['총검색량'].sum()
+                                avg_search = keyword_data['총검색량'].mean()
+                                st.metric(
+                                    keyword,
+                                    f"{int(total_search):,}",
+                                    f"평균 {int(avg_search):,}"
+                                )
+                
+                st.markdown("---")
+                
+                # 검색량 추이 차트
+                fig = go.Figure()
+                
+                for keyword in keywords:
+                    keyword_data = df[df['키워드'] == keyword]
+                    if not keyword_data.empty:
+                        fig.add_trace(go.Scatter(
+                            x=keyword_data['날짜'],
+                            y=keyword_data['총검색량'],
+                            name=keyword,
+                            mode='lines+markers',
+                            line=dict(width=3),
+                            marker=dict(size=6)
+                        ))
+                
+                fig.update_layout(
+                    title='검색량 추이',
+                    xaxis=dict(title='날짜'),
+                    yaxis=dict(title='검색량'),
+                    hovermode='x unified',
+                    height=450
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # PC vs 모바일 비교
+                st.markdown("#### 📱 디바이스별 검색량")
+                
+                device_fig = go.Figure()
+                
+                for keyword in keywords:
+                    keyword_data = df[df['키워드'] == keyword].copy()
+                    if not keyword_data.empty:
+                        # PC
+                        device_fig.add_trace(go.Bar(
+                            name=f'{keyword} (PC)',
+                            x=keyword_data['날짜'],
+                            y=keyword_data['PC검색량'],
+                            text=keyword_data['PC검색량'],
+                            textposition='auto',
+                        ))
+                        # 모바일
+                        device_fig.add_trace(go.Bar(
+                            name=f'{keyword} (모바일)',
+                            x=keyword_data['날짜'],
+                            y=keyword_data['모바일검색량'],
+                            text=keyword_data['모바일검색량'],
+                            textposition='auto',
+                        ))
+                
+                device_fig.update_layout(
+                    title='PC vs 모바일 검색량',
+                    xaxis=dict(title='날짜'),
+                    yaxis=dict(title='검색량'),
+                    barmode='group',
+                    height=400
+                )
+                
+                st.plotly_chart(device_fig, use_container_width=True)
+                
+                # 상세 데이터
+                with st.expander("📋 상세 데이터 보기"):
+                    st.dataframe(df, use_container_width=True)
+                
+                st.success("✅ 검색량 조회 완료!")
+            else:
+                st.warning("데이터가 없습니다.")
+        
+        # 결과 표시 후 플래그 제거
+        del st.session_state['show_bq_naver_result']
 
 
 # 빠른 쿼리 실행
