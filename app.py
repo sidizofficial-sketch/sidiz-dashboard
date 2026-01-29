@@ -189,7 +189,7 @@ def get_naver_search_trend(keywords, start_date, end_date, time_unit='date'):
 def get_naver_keyword_stats(keywords):
     """
     네이버 검색광고 API REST v2 - 키워드 도구
-    블로그 참고: https://blog.naver.com/localdatalab/223711782214
+    참고: https://blog.naver.com/coant/223842429418
     
     Args:
         keywords: 검색어 리스트
@@ -202,37 +202,37 @@ def get_naver_keyword_stats(keywords):
     
     import hashlib
     import hmac
-    import base64
+    import time
     
-    # REST API v2 엔드포인트
+    # API 설정
     BASE_URL = "https://api.naver.com"
     API_PATH = "/keywordstool"
     METHOD = "GET"
     
-    timestamp = str(int(datetime.now().timestamp() * 1000))
+    # 타임스탬프 생성 (밀리초)
+    timestamp = str(round(time.time() * 1000))
     
-    # HMAC 서명 생성
-    message = f"{timestamp}.{METHOD}.{API_PATH}"
-    signature = base64.b64encode(
-        hmac.new(
-            naver_ad_secret_key.encode('utf-8'),
-            message.encode('utf-8'),
-            hashlib.sha256
-        ).digest()
-    )
+    # HMAC 서명 생성 (블로그 방식)
+    message = timestamp + '.' + METHOD + '.' + API_PATH
+    signature = hmac.new(
+        naver_ad_secret_key.encode('UTF-8'),
+        message.encode('UTF-8'),
+        hashlib.sha256
+    ).hexdigest()
     
+    # 헤더 (블로그 방식 순서)
     headers = {
-        "X-Timestamp": timestamp,
-        "X-API-KEY": naver_ad_api_key,
-        "X-Customer": naver_customer_id,
-        "X-Signature": signature,
-        "Content-Type": "application/json; charset=UTF-8"
+        'X-Timestamp': timestamp,
+        'X-API-KEY': naver_ad_api_key,
+        'X-Customer': str(naver_customer_id),
+        'X-Signature': signature,
+        'Content-Type': 'application/json'
     }
     
     # 파라미터 설정
     params = {
-        "hintKeywords": ",".join(keywords),  # 쉼표로 구분된 키워드
-        "showDetail": "1"  # 상세 정보 포함
+        "hintKeywords": ",".join(keywords),
+        "showDetail": "1"
     }
     
     try:
@@ -248,16 +248,52 @@ def get_naver_keyword_stats(keywords):
             
             results = []
             for item in data['keywordList']:
+                # 안전한 숫자 변환 함수
+                def safe_int(value, default=0):
+                    """문자열을 정수로 안전하게 변환"""
+                    if value is None:
+                        return default
+                    if isinstance(value, (int, float)):
+                        return int(value)
+                    if isinstance(value, str):
+                        # "< 10", "N/A" 같은 문자열 처리
+                        if value.strip() in ['', 'N/A', '-']:
+                            return default
+                        # "< 10" 같은 경우 숫자만 추출
+                        import re
+                        numbers = re.findall(r'\d+', str(value))
+                        if numbers:
+                            return int(numbers[0])
+                    return default
+                
+                def safe_float(value, default=0.0):
+                    """문자열을 실수로 안전하게 변환"""
+                    if value is None:
+                        return default
+                    if isinstance(value, (int, float)):
+                        return float(value)
+                    if isinstance(value, str):
+                        if value.strip() in ['', 'N/A', '-']:
+                            return default
+                        import re
+                        numbers = re.findall(r'\d+\.?\d*', str(value))
+                        if numbers:
+                            return float(numbers[0])
+                    return default
+                
+                pc_search = safe_int(item.get('monthlyPcQcCnt'))
+                mobile_search = safe_int(item.get('monthlyMobileQcCnt'))
+                
                 results.append({
                     '키워드': item.get('relKeyword', ''),
-                    '월간검색수_PC': int(item.get('monthlyPcQcCnt', 0)),
-                    '월간검색수_모바일': int(item.get('monthlyMobileQcCnt', 0)),
-                    '월간검색수_합계': int(item.get('monthlyPcQcCnt', 0)) + int(item.get('monthlyMobileQcCnt', 0)),
+                    '월간검색수_PC': pc_search,
+                    '월간검색수_모바일': mobile_search,
+                    '월간검색수_합계': pc_search + mobile_search,
                     '경쟁도': item.get('compIdx', 'N/A'),
-                    '월평균클릭수_PC': int(item.get('monthlyAvePcClkCnt', 0)),
-                    '월평균클릭수_모바일': int(item.get('monthlyAveMobileClkCnt', 0)),
-                    '월평균클릭률_PC': round(float(item.get('monthlyAvePcCtr', 0)), 2),
-                    '월평균클릭률_모바일': round(float(item.get('monthlyAveMobileCtr', 0)), 2)
+                    '월평균클릭수_PC': safe_int(item.get('monthlyAvePcClkCnt')),
+                    '월평균클릭수_모바일': safe_int(item.get('monthlyAveMobileClkCnt')),
+                    '월평균클릭률_PC': safe_float(item.get('monthlyAvePcCtr')),
+                    '월평균클릭률_모바일': safe_float(item.get('monthlyAveMobileCtr'))
                 })
             
             df = pd.DataFrame(results)
