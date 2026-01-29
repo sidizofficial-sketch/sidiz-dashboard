@@ -28,10 +28,10 @@ try:
 
     INSTRUCTION = f"""
     당신은 SIDIZ 데이터 분석 전문가입니다.
-    1. SQL은 ```sql ... ``` 블록에 작성하고 테이블은 {table_path}를 사용하세요.
+    1. SQL은 반드시 ```sql ... ``` 블록에 작성하고 테이블은 {table_path}를 사용하세요.
     2. 결과 데이터에 age, gender, source, revenue, quantity가 포함되게 하세요.
     3. 상품 필터링 시 UNNEST(items)를 사용하세요.
-    4. 분석 시 (1)인구통계 (2)유입경로 (3)성과 (4)이용행태 (5)전환율 관점에서 요약하세요.
+    4. 분석 결과에 (1)인구통계 (2)유입경로 (3)성과 (4)행태 (5)전환율 요약을 포함하세요.
     """
 except Exception as e:
     st.error(f"설정 오류: {e}")
@@ -59,12 +59,12 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징
                 response = model.generate_content(f"{INSTRUCTION}\n\n질문: {prompt}")
                 answer = response.text
                 
-                # 인사이트 요약 출력
+                # 1. 인사이트 요약 출력
                 st.markdown("### 💡 AI 인사이트 요약")
                 insight_text = re.sub(r"```sql.*?```", "", answer, flags=re.DOTALL)
                 st.info(insight_text)
 
-                # SQL 추출 및 실행
+                # 2. SQL 추출 및 실행
                 sql_match = re.search(r"```sql\s*(.*?)\s*```", answer, re.DOTALL)
                 
                 if sql_match:
@@ -73,5 +73,11 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징
                     
                     if not df.empty:
                         st.divider()
-                        st.subheader("📊 실시간 분석 대시보드
-                    
+                        st.subheader("📊 실시간 분석 대시보드")
+                        
+                        # 3. KPI 카드 (성과 지표)
+                        m1, m2, m3 = st.columns(3)
+                        with m1: st.metric("총 분석 모수", f"{len(df):,}건")
+                        with m2: 
+                            avg_rev = df['revenue'].mean() if 'revenue' in df.columns else 0
+                            st.metric("평균 구매액", f
