@@ -19,7 +19,7 @@ try:
         genai.configure(api_key=st.secrets["gemini"]["api_key"])
         
         # [모델 변경] 리스트 6번에 있던 Lite 모델 적용
-        model = genai.GenerativeModel('models/gemini-2.0-flash-lite')
+        model = genai.GenerativeModel('models/gemini-1.5-flash')
         st.sidebar.success("✅ Gemini 2.0 Lite 연결 완료", icon="⚡")
     else:
         st.sidebar.error("❌ API 키를 확인해주세요.", icon="🚨")
