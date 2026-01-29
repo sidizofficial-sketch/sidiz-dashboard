@@ -28,10 +28,10 @@ try:
 
     INSTRUCTION = f"""
     당신은 SIDIZ 데이터 분석 전문가입니다.
-    1. SQL은 반드시 ```sql ... ``` 블록에 작성하고 테이블은 {table_path}를 사용하세요.
+    1. SQL은 ```sql ... ``` 블록에 작성하고 테이블은 {table_path}를 사용하세요.
     2. 결과 데이터에 age, gender, source, revenue, quantity가 포함되게 하세요.
     3. 상품 필터링 시 UNNEST(items)를 사용하세요.
-    4. 질문에 대해 (1)인구통계 (2)유입경로 (3)성과 (4)이용행태 (5)전환율 관점에서 분석 인사이트를 요약하세요.
+    4. 분석 시 (1)인구통계 (2)유입경로 (3)성과 (4)이용행태 (5)전환율 관점에서 요약하세요.
     """
 except Exception as e:
     st.error(f"설정 오류: {e}")
@@ -47,7 +47,7 @@ for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-# 4. 분석 및 시각화 실행 로직
+# 4. 분석 실행 로직
 if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징 알려줘)"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -71,3 +71,9 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징
                     df = client.query(query).to_dataframe()
                     
                     if not df.empty:
+                        st.divider()
+                        st.subheader("📊 실시간 분석 대시보드")
+                        
+                        # 3. 성과 지표 (KPI Cards)
+                        c1, c2, c3 = st.columns(3)
+                        with c1: st.metric("분석 모수",
