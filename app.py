@@ -88,12 +88,49 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
     
     with st.chat_message("assistant"):
         try:
+            # 날짜 키워드 감지 및 기간 자동 설정
+            import re
+            period_detected = False
+            
+            if "최근" in prompt or "지난" in prompt:
+                # 숫자 추출
+                numbers = re.findall(r'\d+', prompt)
+                if numbers:
+                    days = int(numbers[0])
+                    
+                    from datetime import datetime, timedelta
+                    end_date = datetime.now()
+                    start_date = end_date - timedelta(days=days)
+                    
+                    st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+                    st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+                    st.session_state['period_label'] = f"최근 {days}일"
+                    
+                    st.info(f"📅 분석 기간: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} ({days}일)")
+                    period_detected = True
+            
+            # 기본 기간 설정 (설정되지 않은 경우)
+            if 'start_date' not in st.session_state:
+                from datetime import datetime, timedelta
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=7)
+                
+                st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+                st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+                st.session_state['period_label'] = "최근 7일 (기본)"
+                
+                if not period_detected:
+                    st.info(f"📅 기본 분석 기간: 최근 7일 (사이드바에서 변경 가능)")
+            
             with st.spinner("AI 엔진 분석 중..."):
-                # 더 명확한 프롬프트로 SQL 생성 강제
+                # 더 명확한 프롬프트로 SQL 생성 강제 (날짜 조건 포함)
                 enhanced_prompt = f"""
 {INSTRUCTION}
 
 사용자 질문: {prompt}
+
+중요: WHERE 절에 다음 날짜 조건을 반드시 포함하세요:
+WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
 
 반드시 다음 형식으로 답변하세요:
 
@@ -102,21 +139,20 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
 3. 마지막으로 예상 결과 해석
 
 예시:
-최근 1주일 매출을 분석하겠습니다.
+{st.session_state.get('period_label', '최근 7일')} 매출을 분석하겠습니다.
 
 ```sql
 SELECT
-  event_date,
-  SUM(ecommerce.purchase_revenue) as revenue
+  PARSE_DATE('%Y%m%d', event_date) as date,
+  COUNTIF(event_name = 'purchase') as purchases,
+  ROUND(SUM(ecommerce.purchase_revenue), 2) as revenue
 FROM `{table_path}`
-WHERE _TABLE_SUFFIX BETWEEN FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
-  AND FORMAT_DATE('%Y%m%d', CURRENT_DATE())
-  AND event_name = 'purchase'
-GROUP BY event_date
-ORDER BY event_date DESC
+WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
+GROUP BY date
+ORDER BY date DESC
 ```
 
-이 쿼리는 최근 7일간의 일별 매출을 보여줍니다.
+이 쿼리는 지정된 기간의 일별 매출을 보여줍니다.
 """
                 
                 response = model.generate_content(enhanced_prompt)
@@ -287,61 +323,137 @@ LIMIT 100
 
 # 5. 사이드바 - 추가 정보
 with st.sidebar:
+    st.markdown("### 📅 기간 선택")
+    
+    # 날짜 범위 선택
+    date_option = st.radio(
+        "분석 기간",
+        ["빠른 선택", "직접 선택"],
+        horizontal=True
+    )
+    
+    if date_option == "빠른 선택":
+        quick_period = st.selectbox(
+            "기간",
+            ["최근 7일", "최근 14일", "최근 30일", "최근 90일"]
+        )
+        
+        period_map = {
+            "최근 7일": 7,
+            "최근 14일": 14,
+            "최근 30일": 30,
+            "최근 90일": 90
+        }
+        days = period_map[quick_period]
+        
+        # 계산된 날짜 표시
+        from datetime import datetime, timedelta
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+        
+        st.info(f"📆 {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
+        
+        st.session_state['analysis_days'] = days
+        st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+        st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+        st.session_state['period_label'] = quick_period
+        
+    else:
+        # 직접 날짜 선택
+        from datetime import datetime, timedelta
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input(
+                "시작일",
+                value=datetime.now() - timedelta(days=7),
+                max_value=datetime.now()
+            )
+        with col2:
+            end_date = st.date_input(
+                "종료일",
+                value=datetime.now(),
+                max_value=datetime.now()
+            )
+        
+        if start_date and end_date:
+            days_diff = (end_date - start_date).days + 1
+            st.success(f"✅ 선택된 기간: **{days_diff}일**")
+            
+            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+            st.session_state['period_label'] = f"{start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
+            st.session_state['analysis_days'] = days_diff
+    
+    st.markdown("---")
     st.markdown("### 📌 사용 가이드")
     
     # 빠른 분석 템플릿
     st.markdown("#### 🚀 빠른 분석")
     
-    if st.button("📅 최근 7일 사용자 추이"):
-        template_query = f"""
+    if st.button("📅 사용자 추이 분석"):
+        if 'start_date' not in st.session_state:
+            st.warning("먼저 기간을 선택하세요!")
+        else:
+            template_query = f"""
 SELECT
-  event_date,
+  PARSE_DATE('%Y%m%d', event_date) as date,
   COUNT(DISTINCT user_pseudo_id) as users,
   COUNTIF(event_name = 'purchase') as purchases
 FROM `{table_path}`
-WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
-GROUP BY event_date
-ORDER BY event_date DESC
+WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
+GROUP BY date
+ORDER BY date DESC
 """
-        st.session_state['quick_query'] = template_query
-        st.rerun()
+            st.session_state['quick_query'] = template_query
+            st.session_state['query_type'] = 'user_trend'
+            st.rerun()
     
-    if st.button("💰 오늘 구매 현황"):
-        template_query = f"""
+    if st.button("💰 매출 추이 분석"):
+        if 'start_date' not in st.session_state:
+            st.warning("먼저 기간을 선택하세요!")
+        else:
+            template_query = f"""
 SELECT
-  COUNT(DISTINCT user_pseudo_id) as buyers,
+  PARSE_DATE('%Y%m%d', event_date) as date,
   COUNTIF(event_name = 'purchase') as purchases,
-  ROUND(SUM(ecommerce.purchase_revenue), 2) as total_revenue
+  ROUND(SUM(ecommerce.purchase_revenue), 2) as revenue
 FROM `{table_path}`
-WHERE _TABLE_SUFFIX = FORMAT_DATE('%Y%m%d', CURRENT_DATE())
-  AND event_name = 'purchase'
+WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
+GROUP BY date
+ORDER BY date DESC
 """
-        st.session_state['quick_query'] = template_query
-        st.rerun()
+            st.session_state['quick_query'] = template_query
+            st.session_state['query_type'] = 'revenue_trend'
+            st.rerun()
     
     if st.button("🪑 T50 제품 분석"):
-        template_query = f"""
+        if 'start_date' not in st.session_state:
+            st.warning("먼저 기간을 선택하세요!")
+        else:
+            template_query = f"""
 SELECT
-  event_date,
+  PARSE_DATE('%Y%m%d', event_date) as date,
   COUNT(DISTINCT user_pseudo_id) as users,
   COUNTIF(event_name = 'purchase') as purchases
 FROM `{table_path}`,
   UNNEST(items) AS item
-WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
+WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
   AND item.item_name LIKE '%T50%'
-GROUP BY event_date
-ORDER BY event_date DESC
+GROUP BY date
+ORDER BY date DESC
 LIMIT 100
 """
-        st.session_state['quick_query'] = template_query
-        st.rerun()
+            st.session_state['quick_query'] = template_query
+            st.session_state['query_type'] = 't50_analysis'
+            st.rerun()
     
     st.markdown("---")
     st.markdown("#### 💬 질문 예시")
     st.markdown("""
-    - **최근 1주일 매출**
-    - **어제 구매 데이터**
-    - **T50 구매자 수**
+    - **최근 7일 매출 분석해줘**
+    - **작년 12월 데이터 보여줘**
+    - **T50 구매 추이**
     """)
     
     if st.button("🗑️ 대화 기록 초기화"):
@@ -353,31 +465,143 @@ LIMIT 100
 # 빠른 쿼리 실행
 if 'quick_query' in st.session_state and st.session_state['quick_query']:
     with st.chat_message("assistant"):
-        st.markdown("### 📊 빠른 분석 결과")
+        # 집계 기간 표시
+        if 'period_label' in st.session_state:
+            st.markdown(f"### 📊 분석 결과 | 📅 {st.session_state['period_label']}")
+        else:
+            st.markdown("### 📊 빠른 분석 결과")
         
         try:
             query_job = client.query(st.session_state['quick_query'])
             df = query_job.to_dataframe()
             
             if not df.empty:
-                st.dataframe(df, use_container_width=True)
+                # 데이터를 날짜 순으로 정렬 (차트용)
+                if 'date' in df.columns:
+                    df = df.sort_values('date')
                 
-                # 자동 시각화
-                if len(df) > 1:
-                    if 'event_date' in df.columns and 'users' in df.columns:
-                        fig = px.line(df, x='event_date', y='users', title='일별 사용자 추이')
+                # KPI 카드 (주요 지표) - 기간 정보 포함
+                st.markdown(f"#### 핵심 지표")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    if 'users' in df.columns:
+                        total_users = df['users'].sum()
+                        st.metric("총 사용자", f"{total_users:,}")
+                    elif 'purchases' in df.columns:
+                        total_purchases = df['purchases'].sum()
+                        st.metric("총 구매", f"{total_purchases:,}건")
+                
+                with col2:
+                    if 'purchases' in df.columns:
+                        total_purchases = df['purchases'].sum()
+                        st.metric("총 구매", f"{total_purchases:,}건")
+                
+                with col3:
+                    if 'revenue' in df.columns:
+                        total_revenue = df['revenue'].sum()
+                        st.metric("총 매출", f"₩{total_revenue:,.0f}")
+                
+                with col4:
+                    if 'users' in df.columns and 'purchases' in df.columns:
+                        conversion = (df['purchases'].sum() / df['users'].sum() * 100) if df['users'].sum() > 0 else 0
+                        st.metric("평균 전환율", f"{conversion:.1f}%")
+                    elif 'revenue' in df.columns and 'purchases' in df.columns:
+                        avg_order_value = df['revenue'].sum() / df['purchases'].sum() if df['purchases'].sum() > 0 else 0
+                        st.metric("평균 객단가", f"₩{avg_order_value:,.0f}")
+                
+                st.markdown("---")
+                
+                # 메인 차트들
+                if len(df) > 1 and 'date' in df.columns:
+                    
+                    # 사용자 & 구매 추이 (듀얼 차트)
+                    if 'users' in df.columns and 'purchases' in df.columns:
+                        fig = go.Figure()
+                        
+                        fig.add_trace(go.Scatter(
+                            x=df['date'], 
+                            y=df['users'],
+                            name='사용자',
+                            mode='lines+markers',
+                            line=dict(color='#1f77b4', width=3),
+                            marker=dict(size=8)
+                        ))
+                        
+                        fig.add_trace(go.Scatter(
+                            x=df['date'], 
+                            y=df['purchases'],
+                            name='구매',
+                            mode='lines+markers',
+                            line=dict(color='#ff7f0e', width=3),
+                            marker=dict(size=8),
+                            yaxis='y2'
+                        ))
+                        
+                        fig.update_layout(
+                            title=f'일별 사용자 및 구매 추이 ({st.session_state.get("period_label", "")})',
+                            xaxis=dict(title='날짜'),
+                            yaxis=dict(title='사용자 수', side='left'),
+                            yaxis2=dict(title='구매 건수', overlaying='y', side='right'),
+                            hovermode='x unified',
+                            height=400,
+                            showlegend=True,
+                            legend=dict(x=0.01, y=0.99)
+                        )
+                        
                         st.plotly_chart(fig, use_container_width=True)
-                    elif 'event_date' in df.columns and 'purchases' in df.columns:
-                        fig = px.bar(df, x='event_date', y='purchases', title='일별 구매 건수')
+                    
+                    # 매출 추이
+                    elif 'revenue' in df.columns:
+                        fig = go.Figure()
+                        
+                        fig.add_trace(go.Bar(
+                            x=df['date'],
+                            y=df['revenue'],
+                            marker=dict(
+                                color=df['revenue'],
+                                colorscale='Blues',
+                                showscale=True,
+                                colorbar=dict(title="매출(₩)")
+                            ),
+                            text=df['revenue'].apply(lambda x: f'₩{x:,.0f}'),
+                            textposition='outside'
+                        ))
+                        
+                        fig.update_layout(
+                            title=f'일별 매출 추이 ({st.session_state.get("period_label", "")})',
+                            xaxis=dict(title='날짜'),
+                            yaxis=dict(title='매출 (₩)'),
+                            height=400,
+                            showlegend=False
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 단일 지표 라인 차트
+                    elif 'users' in df.columns:
+                        fig = px.area(df, x='date', y='users', 
+                                     title=f'일별 사용자 추이 ({st.session_state.get("period_label", "")})',
+                                     color_discrete_sequence=['#636EFA'])
+                        fig.update_traces(line=dict(width=3))
+                        fig.update_layout(height=400)
                         st.plotly_chart(fig, use_container_width=True)
                 
+                # 데이터 테이블
+                with st.expander("📋 상세 데이터 보기"):
+                    st.dataframe(df, use_container_width=True)
+                
+                # SQL 쿼리
                 with st.expander("🔍 실행된 쿼리"):
                     st.code(st.session_state['quick_query'], language='sql')
             else:
-                st.warning("데이터가 없습니다.")
+                st.warning("⚠️ 데이터가 없습니다. 날짜 범위를 조정하거나 다른 분석을 시도해보세요.")
                 
         except Exception as e:
-            st.error(f"쿼리 실행 오류: {str(e)}")
+            st.error(f"❌ 쿼리 실행 오류: {str(e)}")
+            with st.expander("🔍 실행하려던 쿼리"):
+                st.code(st.session_state['quick_query'], language='sql')
         
         # 쿼리 실행 후 세션에서 제거
         del st.session_state['quick_query']
