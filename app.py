@@ -667,11 +667,12 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
                             st.info(f"📅 분석 기간: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} ({days}일)")
                             period_detected = True
                     
-                    # 기간이 설정되지 않은 경우 (선택 안함 상태)
-                    use_period_in_sql = 'start_date' in st.session_state
-                    
-                    # SQL에 사용할 임시 기간 설정
-                    if not use_period_in_sql:
+                    # 기간이 설정되어 있으면 사용, 없으면 최근 7일 기본값
+                    if 'start_date' in st.session_state:
+                        temp_start = st.session_state['start_date']
+                        temp_end = st.session_state['end_date']
+                    else:
+                        # 기본값: 최근 7일
                         from datetime import datetime, timedelta
                         end_date = datetime.now()
                         start_date = end_date - timedelta(days=7)
@@ -679,29 +680,18 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
                         temp_start = start_date.strftime('%Y%m%d')
                         temp_end = end_date.strftime('%Y%m%d')
                         
+                        st.session_state['start_date'] = temp_start
+                        st.session_state['end_date'] = temp_end
+                        st.session_state['period_label'] = "최근 7일"
+                        
                         if not period_detected:
-                            st.info(f"💡 AI가 질문에 맞춰 기간을 자동 설정합니다")
-                    else:
-                        temp_start = st.session_state['start_date']
-                        temp_end = st.session_state['end_date']
-                        # 기간 정보는 한 번만 표시하므로 중복 제거
+                            st.info(f"📅 분석 기간: 최근 7일")
                     
                     with st.spinner("AI 엔진 분석 중..."):
-                        # 프롬프트 생성 (기간 설정 여부에 따라 다르게)
-                        if use_period_in_sql:
-                            # 사용자가 기간을 명시적으로 선택한 경우
-                            date_instruction = f"""
+                        # 프롬프트 생성 (항상 기간 포함)
+                        date_instruction = f"""
 중요: WHERE 절에 다음 날짜 조건을 반드시 포함하세요:
 WHERE _TABLE_SUFFIX BETWEEN '{temp_start}' AND '{temp_end}'
-"""
-                        else:
-                            # 선택 안함 - AI가 자유롭게 판단
-                            date_instruction = f"""
-날짜 필터링:
-- 사용자가 "최근 N일" 같은 키워드를 사용하면 해당 기간 사용
-- 그 외에는 질문 맥락에 맞는 적절한 기간 사용
-- 기본 예시: WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
-- 또는: WHERE _TABLE_SUFFIX BETWEEN '{temp_start}' AND '{temp_end}'
 """
                         
                         enhanced_prompt = f"""
@@ -1120,26 +1110,16 @@ with st.sidebar:
     # 날짜 범위 선택
     date_option = st.radio(
         "분석 기간",
-        ["선택 안함", "빠른 선택", "직접 선택"],
+        ["빠른 선택", "직접 선택"],
         horizontal=True,
-        index=0  # 기본값: 선택 안함
+        index=0  # 기본값: 빠른 선택
     )
     
-    if date_option == "선택 안함":
-        # 기간 설정 초기화
-        if 'start_date' in st.session_state:
-            del st.session_state['start_date']
-        if 'end_date' in st.session_state:
-            del st.session_state['end_date']
-        if 'period_label' in st.session_state:
-            del st.session_state['period_label']
-        
-        st.info("💡 AI가 질문에 맞춰 자동으로 기간을 설정합니다")
-        
-    elif date_option == "빠른 선택":
+    if date_option == "빠른 선택":
         quick_period = st.selectbox(
             "기간",
-            ["최근 7일", "최근 14일", "최근 30일", "최근 90일"]
+            ["최근 7일", "최근 14일", "최근 30일", "최근 90일"],
+            index=0  # 기본값: 최근 7일
         )
         
         period_map = {
@@ -1191,122 +1171,6 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # 네이버 검색량 분석
-    st.markdown("### 🔍 네이버 검색 분석")
-    
-    # API 키 설정 상태 확인
-    if not (naver_client_id or naver_ad_api_key):
-        st.warning("⚠️ 네이버 API 키가 설정되지 않았습니다.")
-        with st.expander("🔍 설정 상태 디버깅"):
-            st.write("**Secrets 섹션 확인:**")
-            st.write(f"- `[naver]` 존재: {'naver' in st.secrets}")
-            st.write(f"- `[naver_ads]` 존재: {'naver_ads' in st.secrets}")
-            
-            if 'naver_ads' in st.secrets:
-                st.write("")
-                st.write("**`[naver_ads]` 내용:**")
-                cust = st.secrets['naver_ads'].get('customer_id')
-                api = st.secrets['naver_ads'].get('api_key')
-                sec = st.secrets['naver_ads'].get('secret_key')
-                
-                st.write(f"- customer_id 존재: {bool(cust)}")
-                st.write(f"- api_key 존재: {bool(api)}")
-                st.write(f"- secret_key 존재: {bool(sec)}")
-                
-                if cust:
-                    st.write(f"- customer_id 값: `{cust}`")
-                if api:
-                    st.write(f"- api_key 앞 10자리: `{api[:10]}...`")
-                if sec:
-                    st.write(f"- secret_key 길이: {len(sec)}자")
-            
-            st.write("")
-            st.write("**코드가 읽은 최종 값:**")
-            st.write(f"- naver_ad_api_key: {bool(naver_ad_api_key)}")
-            st.write(f"- naver_ad_secret_key: {bool(naver_ad_secret_key)}")
-            st.write(f"- naver_customer_id: {bool(naver_customer_id)}")
-            
-            if naver_ad_api_key:
-                st.success("✅ API 키가 정상적으로 읽혔습니다!")
-            else:
-                st.error("❌ API 키가 None 또는 빈 문자열입니다.")
-        
-        st.info("**올바른 Secrets 형식:**")
-        st.code("""[naver_ads]
-customer_id = "1234567"
-api_key = "abcd1234efgh"
-secret_key = "xyz789secret"
-        """)
-        st.warning("⚠️ **중요:**")
-        st.markdown("1. 따옴표 `\"` 반드시 사용")
-        st.markdown("2. 값이 비어있으면 안 됨")
-        st.markdown("3. 설정 후 **Reboot app** 필수!")
-    
-    elif naver_client_id or naver_ad_api_key:
-        st.markdown("### 🔍 네이버 검색 분석")
-        
-        # API 선택
-        api_type = st.radio(
-            "API 선택",
-            ["데이터랩 (트렌드)", "검색광고 (키워드 통계)"],
-            help="데이터랩: 시간별 검색량 추이 / 검색광고: 월간 검색량, 경쟁도 등"
-        )
-        
-        # 검색어 입력
-        keywords_input = st.text_input(
-            "검색어 입력 (쉼표로 구분)",
-            placeholder="예: T50,T80,의자"
-        )
-        
-        if api_type == "데이터랩 (트렌드)":
-            # 기간 선택
-            col1, col2 = st.columns(2)
-            with col1:
-                search_start = st.date_input(
-                    "시작일",
-                    value=datetime.now() - timedelta(days=30),
-                    key="naver_start"
-                )
-            with col2:
-                search_end = st.date_input(
-                    "종료일",
-                    value=datetime.now(),
-                    key="naver_end"
-                )
-            
-            time_unit = st.selectbox(
-                "집계 단위",
-                ["date", "week", "month"],
-                format_func=lambda x: {"date": "일별", "week": "주별", "month": "월별"}[x]
-            )
-            
-            if st.button("🔍 트렌드 조회"):
-                if keywords_input:
-                    keywords = [k.strip() for k in keywords_input.split(",") if k.strip()][:5]
-                    
-                    st.session_state['naver_api_type'] = 'trend'
-                    st.session_state['naver_keywords'] = keywords
-                    st.session_state['naver_start'] = search_start.strftime('%Y-%m-%d')
-                    st.session_state['naver_end'] = search_end.strftime('%Y-%m-%d')
-                    st.session_state['naver_time_unit'] = time_unit
-                    st.session_state['show_naver_result'] = True
-                    st.rerun()
-                else:
-                    st.warning("검색어를 입력하세요!")
-        
-        else:  # 검색광고
-            if st.button("📊 키워드 통계 조회"):
-                if keywords_input:
-                    keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
-                    
-                    st.session_state['naver_api_type'] = 'keyword_stats'
-                    st.session_state['naver_keywords'] = keywords
-                    st.session_state['show_naver_result'] = True
-                    st.rerun()
-                else:
-                    st.warning("검색어를 입력하세요!")
-        
-        st.markdown("---")
     
     st.markdown("---")
     st.markdown("### 📌 사용 가이드")
