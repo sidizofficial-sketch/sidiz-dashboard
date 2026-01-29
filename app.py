@@ -27,20 +27,18 @@ try:
     table_path = f"`{project_id}.{dataset_id}.events_*`"
 
     INSTRUCTION = f"""
-    당신은 SIDIZ의 데이터 분석 전문가입니다. 사용자의 질문에 대해 다음 가이드를 준수하세요.
-    1. 반드시 ```sql ... ``` 블록에 BigQuery SQL을 포함하세요. 테이블은 {table_path}를 사용하세요.
-    2. 결과 데이터에 age, gender, source, revenue, quantity 정보가 포함되도록 쿼리하세요.
-    3. 제품 필터링 시 UNNEST(items)를 사용하고 LIKE 연산자를 활용하세요.
-    4. 분석 결과에 대해 비즈니스 인사이트 요약을 제공하세요.
+    당신은 SIDIZ의 데이터 분석 전문가입니다.
+    1. SQL은 ```sql ... ``` 블록에 작성하고 테이블은 {table_path}를 사용하세요.
+    2. 결과 데이터에 age, gender, source, revenue, quantity가 포함되게 하세요.
+    3. 상품 필터링 시 UNNEST(items)를 사용하세요.
+    4. 분석 후 반드시 '인사이트 요약'을 제공하세요.
     """
-
 except Exception as e:
-    st.error(f"초기 설정 오류: {e}")
+    st.error(f"설정 오류: {e}")
     st.stop()
 
 # 3. UI 구성
 st.title("🪑 SIDIZ AI Intelligence Dashboard")
-st.caption("실시간 GA4 데이터 기반 통합 인텔리전스 리포트")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -50,14 +48,14 @@ for m in st.session_state.messages:
         st.markdown(m["content"])
 
 # 4. 분석 실행 로직
-if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징과 유입 경로 분석해줘)"):
+if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징 알려줘)"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
         try:
-            with st.spinner("AI 분석 엔진 가동 중..."):
+            with st.spinner("AI가 데이터를 분석 중입니다..."):
                 response = model.generate_content(f"{INSTRUCTION}\n\n질문: {prompt}")
                 answer = response.text
                 
@@ -65,6 +63,3 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 구매자 특징
                 st.markdown("### 💡 AI 인사이트 요약")
                 insight_text = re.sub(r"```sql.*?```", "", answer, flags=re.DOTALL)
                 st.info(insight_text)
-
-                # SQL 추출 및 실행
-                sql_match = re.search(r"```sql\s*(.*?)\s*```", answer, re.
