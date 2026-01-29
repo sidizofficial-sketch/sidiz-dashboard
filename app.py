@@ -48,29 +48,33 @@ try:
     
     [GA4 이벤트 구조]
     - event_date: 이벤트 날짜 (STRING, YYYYMMDD)
-    - event_name: 이벤트 이름 ('purchase', 'page_view' 등)
+    - event_name: 이벤트 이름 ('page_view', 'purchase' 등)
     - user_pseudo_id: 사용자 ID
     - items: 구매 상품 정보 (ARRAY)
     - ecommerce.purchase_revenue: 구매 금액
+    - page_location: 페이지 URL (예: https://www.example.com/product/T50)
     
-    [SQL 작성 규칙]
-    1. 반드시 ```sql 코드블록 안에 작성
-    2. 상품 필터링 시: WHERE EXISTS (SELECT 1 FROM UNNEST(items) AS item WHERE item.item_name LIKE '%상품명%')
-    3. 날짜는 최근 7일: _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
-    4. 항상 LIMIT 100 추가
+    [제품 분석 방법]
+    제품명(T50, T80 등)으로 분석할 때는 page_location을 사용하세요:
     
-    [올바른 SQL 예시]
     ```sql
+    -- 올바른 예시: page_location으로 제품 필터링
     SELECT
       event_date,
-      COUNT(DISTINCT user_pseudo_id) as users,
-      COUNTIF(event_name = 'purchase') as purchases
+      COUNT(DISTINCT user_pseudo_id) as users
     FROM `{table_path}`
     WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+      AND page_location LIKE '%/T50%'
     GROUP BY event_date
     ORDER BY event_date DESC
     LIMIT 100
     ```
+    
+    [SQL 작성 규칙]
+    1. 반드시 ```sql 코드블록 안에 작성
+    2. 제품 필터링: WHERE page_location LIKE '%/제품명%'
+    3. 날짜는 _TABLE_SUFFIX 사용
+    4. 항상 LIMIT 100 추가
     
     중요: 복잡한 분석이 필요하면 여러 개의 간단한 쿼리로 나누세요.
     """
@@ -421,6 +425,7 @@ ORDER BY date DESC
                             'users': '사용자',
                             'distinct_users': '사용자',
                             'purchases': '구매',
+                            'page_views': '페이지뷰',
                             'revenue': '매출',
                             'quantity': '수량',
                             'sessions': '세션',
@@ -479,10 +484,10 @@ ORDER BY date DESC
                                     break
                             
                             if date_col:
-                                # 사용자 + 구매 듀얼 차트
+                                # 사용자 + 구매/페이지뷰 듀얼 차트
                                 user_col = 'users' if 'users' in df.columns else ('distinct_users' if 'distinct_users' in df.columns else None)
                                 
-                                if user_col and 'purchases' in df.columns:
+                                if user_col and ('purchases' in df.columns or 'page_views' in df.columns):
                                     fig = go.Figure()
                                     
                                     fig.add_trace(go.Scatter(
@@ -494,10 +499,14 @@ ORDER BY date DESC
                                         marker=dict(size=8)
                                     ))
                                     
+                                    # 구매 또는 페이지뷰 추가
+                                    second_metric = 'purchases' if 'purchases' in df.columns else 'page_views'
+                                    second_label = '구매' if second_metric == 'purchases' else '페이지뷰'
+                                    
                                     fig.add_trace(go.Scatter(
                                         x=df[date_col], 
-                                        y=df['purchases'],
-                                        name='구매',
+                                        y=df[second_metric],
+                                        name=second_label,
                                         mode='lines+markers',
                                         line=dict(color='#ff7f0e', width=3),
                                         marker=dict(size=8),
@@ -505,10 +514,10 @@ ORDER BY date DESC
                                     ))
                                     
                                     fig.update_layout(
-                                        title='일별 사용자 및 구매 추이',
+                                        title=f'일별 사용자 및 {second_label} 추이',
                                         xaxis=dict(title='날짜'),
                                         yaxis=dict(title='사용자 수', side='left'),
-                                        yaxis2=dict(title='구매 건수', overlaying='y', side='right'),
+                                        yaxis2=dict(title=f'{second_label} 수', overlaying='y', side='right'),
                                         hovermode='x unified',
                                         height=400,
                                         showlegend=True,
@@ -726,7 +735,7 @@ with st.sidebar:
 SELECT
   PARSE_DATE('%Y%m%d', event_date) as date,
   COUNT(DISTINCT user_pseudo_id) as users,
-  COUNTIF(event_name = 'purchase') as purchases
+  COUNTIF(event_name = 'page_view') as page_views
 FROM `{table_path}`
 WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
 GROUP BY date
@@ -774,11 +783,10 @@ ORDER BY date DESC
 SELECT
   PARSE_DATE('%Y%m%d', event_date) as date,
   COUNT(DISTINCT user_pseudo_id) as users,
-  COUNTIF(event_name = 'purchase') as purchases
-FROM `{table_path}`,
-  UNNEST(items) AS item
+  COUNTIF(event_name = 'page_view') as page_views
+FROM `{table_path}`
 WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
-  AND item.item_name LIKE '%T50%'
+  AND (page_location LIKE '%/T50%' OR page_location LIKE '%/t50%')
 GROUP BY date
 ORDER BY date DESC
 LIMIT 100
