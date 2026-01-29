@@ -404,74 +404,193 @@ st.markdown("### 📊 핵심 지표")
 
 # 전체 기간 KPI 조회
 try:
-    # 기본 기간 설정
+    # 기본 기간 설정 (종료일 = 어제)
     if 'start_date' not in st.session_state:
         from datetime import datetime, timedelta
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=30)
+        end_date = datetime.now() - timedelta(days=1)  # 어제
+        start_date = end_date - timedelta(days=6)  # 최근 7일
         st.session_state['start_date'] = start_date.strftime('%Y%m%d')
         st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+        st.session_state['period_label'] = "최근 7일"
     
-    # KPI 쿼리
+    current_start = st.session_state.get('start_date', '20240101')
+    current_end = st.session_state.get('end_date', '20240131')
+    
+    # 전기 기간 계산 (동일 일수만큼 이전)
+    from datetime import datetime, timedelta
+    current_start_dt = datetime.strptime(current_start, '%Y%m%d')
+    current_end_dt = datetime.strptime(current_end, '%Y%m%d')
+    period_days = (current_end_dt - current_start_dt).days + 1
+    
+    previous_end_dt = current_start_dt - timedelta(days=1)
+    previous_start_dt = previous_end_dt - timedelta(days=period_days - 1)
+    
+    previous_start = previous_start_dt.strftime('%Y%m%d')
+    previous_end = previous_end_dt.strftime('%Y%m%d')
+    
+    # KPI 쿼리 (현재 기간 + 전기 기간)
     kpi_query = f"""
-    WITH base_data AS (
+    WITH current_period AS (
         SELECT 
             COUNT(DISTINCT user_pseudo_id) as total_users,
             COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as purchasers,
+            COUNTIF(event_name = 'purchase') as total_purchases,
             SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END) as total_revenue,
-            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN event_timestamp END) as purchase_count
+            COUNTIF(event_name = 'add_to_cart') as add_to_cart_count,
+            COUNTIF(event_name = 'begin_checkout') as begin_checkout_count
         FROM `{table_path}`
-        WHERE _TABLE_SUFFIX BETWEEN '{st.session_state.get('start_date', '20240101')}' 
-          AND '{st.session_state.get('end_date', '20240131')}'
+        WHERE _TABLE_SUFFIX BETWEEN '{current_start}' AND '{current_end}'
+    ),
+    previous_period AS (
+        SELECT 
+            COUNT(DISTINCT user_pseudo_id) as total_users,
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as purchasers,
+            COUNTIF(event_name = 'purchase') as total_purchases,
+            SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END) as total_revenue,
+            COUNTIF(event_name = 'add_to_cart') as add_to_cart_count,
+            COUNTIF(event_name = 'begin_checkout') as begin_checkout_count
+        FROM `{table_path}`
+        WHERE _TABLE_SUFFIX BETWEEN '{previous_start}' AND '{previous_end}'
     )
     SELECT 
-        total_users,
-        purchasers,
-        ROUND(SAFE_DIVIDE(purchasers * 100, total_users), 2) as conversion_rate,
-        ROUND(total_revenue, 0) as total_revenue,
-        ROUND(SAFE_DIVIDE(total_revenue, purchase_count), 0) as avg_order_value
-    FROM base_data
+        -- 현재 기간
+        c.total_users,
+        c.purchasers,
+        c.total_purchases,
+        c.total_revenue,
+        c.add_to_cart_count,
+        c.begin_checkout_count,
+        ROUND(SAFE_DIVIDE(c.purchasers * 100, c.total_users), 2) as conversion_rate,
+        ROUND(SAFE_DIVIDE(c.total_revenue, c.total_purchases), 0) as avg_order_value,
+        
+        -- 전기 기간
+        p.total_users as prev_users,
+        p.purchasers as prev_purchasers,
+        p.total_purchases as prev_purchases,
+        p.total_revenue as prev_revenue,
+        p.add_to_cart_count as prev_add_to_cart,
+        p.begin_checkout_count as prev_begin_checkout,
+        ROUND(SAFE_DIVIDE(p.purchasers * 100, p.total_users), 2) as prev_conversion_rate,
+        ROUND(SAFE_DIVIDE(p.total_revenue, p.total_purchases), 0) as prev_avg_order_value,
+        
+        -- 증감율
+        ROUND(SAFE_DIVIDE((c.total_users - p.total_users) * 100, p.total_users), 1) as users_change_pct,
+        ROUND(SAFE_DIVIDE((c.total_purchases - p.total_purchases) * 100, p.total_purchases), 1) as purchases_change_pct,
+        ROUND(SAFE_DIVIDE((c.purchasers - p.purchasers) * 100, p.purchasers), 1) as purchasers_change_pct,
+        ROUND(SAFE_DIVIDE((c.total_revenue - p.total_revenue) * 100, p.total_revenue), 1) as revenue_change_pct,
+        ROUND(SAFE_DIVIDE(((c.purchasers * 100.0 / c.total_users) - (p.purchasers * 100.0 / p.total_users)), 1), 1) as conversion_change_pp,
+        ROUND(SAFE_DIVIDE(((c.total_revenue / c.total_purchases) - (p.total_revenue / p.total_purchases)) * 100, (p.total_revenue / p.total_purchases)), 1) as aov_change_pct,
+        ROUND(SAFE_DIVIDE((c.add_to_cart_count - p.add_to_cart_count) * 100, p.add_to_cart_count), 1) as cart_change_pct,
+        ROUND(SAFE_DIVIDE((c.begin_checkout_count - p.begin_checkout_count) * 100, p.begin_checkout_count), 1) as checkout_change_pct
+    FROM current_period c, previous_period p
     """
     
     kpi_df = client.query(kpi_query).to_dataframe()
     
     if not kpi_df.empty:
-        kpi_row = kpi_df.iloc[0]
+        kpi = kpi_df.iloc[0]
         
+        # 첫 번째 줄: 주요 지표 4개
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.metric(
-                "총 방문자",
-                f"{int(kpi_row['total_users']):,}명",
-                help="선택된 기간의 고유 방문자 수"
+                "세션",
+                f"{int(kpi['total_users']):,}",
+                f"{kpi['users_change_pct']:+.1f}%" if pd.notna(kpi['users_change_pct']) else None,
+                delta_color="normal"
             )
         
         with col2:
             st.metric(
-                "전환율",
-                f"{kpi_row['conversion_rate']:.1f}%",
-                help="구매한 방문자 / 전체 방문자"
+                "제품 조회",
+                f"{int(kpi['total_purchases'] + kpi['add_to_cart_count']):,}",  # 임시: 제품 조회 대신 구매+장바구니
+                help="제품 상세 페이지 조회 수"
             )
         
         with col3:
             st.metric(
-                "총 매출",
-                f"₩{int(kpi_row['total_revenue']/1000000):,}M",
-                help="전체 구매 매출"
+                "장바구니 담기",
+                f"{int(kpi['add_to_cart_count']):,}",
+                f"{kpi['cart_change_pct']:+.1f}%" if pd.notna(kpi['cart_change_pct']) else None,
+                delta_color="normal"
             )
         
         with col4:
             st.metric(
-                "평균 주문액",
-                f"₩{int(kpi_row['avg_order_value']):,}",
-                help="주문당 평균 금액"
+                "장바구니 조회",
+                f"{int(kpi['begin_checkout_count']):,}",
+                f"{kpi['checkout_change_pct']:+.1f}%" if pd.notna(kpi['checkout_change_pct']) else None,
+                delta_color="normal"
+            )
+        
+        # 두 번째 줄: 매출 관련 지표
+        col5, col6, col7, col8, col9, col10 = st.columns(6)
+        
+        with col5:
+            st.metric(
+                "결제 페이지 진입",
+                f"{int(kpi['begin_checkout_count']):,}",
+                f"{kpi['checkout_change_pct']:+.1f}%" if pd.notna(kpi['checkout_change_pct']) else None,
+                delta_color="normal"
+            )
+        
+        with col6:
+            st.metric(
+                "구매 완료",
+                f"{int(kpi['purchasers']):,}",
+                f"{kpi['purchasers_change_pct']:+.1f}%" if pd.notna(kpi['purchasers_change_pct']) else None,
+                delta_color="normal"
+            )
+        
+        with col7:
+            st.metric(
+                "구매전환율",
+                f"{kpi['conversion_rate']:.1f}%",
+                f"{kpi['conversion_change_pp']:+.1f}%p" if pd.notna(kpi['conversion_change_pp']) else None,
+                delta_color="normal"
+            )
+        
+        with col8:
+            st.metric(
+                "총 매출 (회원할인가 합)",
+                f"{int(kpi['total_revenue']):,}",
+                f"{kpi['revenue_change_pct']:+.1f}%" if pd.notna(kpi['revenue_change_pct']) else None,
+                delta_color="normal"
+            )
+        
+        with col9:
+            st.metric(
+                "총 판매수량",
+                f"{int(kpi['total_purchases']):,}",
+                f"{kpi['purchases_change_pct']:+.1f}%" if pd.notna(kpi['purchases_change_pct']) else None,
+                delta_color="normal"
+            )
+        
+        with col10:
+            st.metric(
+                "평균 주문금액",
+                f"₩{int(kpi['avg_order_value']):,}",
+                f"{kpi['aov_change_pct']:+.1f}%" if pd.notna(kpi['aov_change_pct']) else None,
+                delta_color="normal"
+            )
+        
+        # 세 번째 줄: 추가 지표 (오른쪽 이미지에 있는 항목들)
+        col11, col12 = st.columns(2)
+        
+        with col11:
+            st.metric(
+                "원본 수",
+                "301",  # 임시값 - 실제 데이터로 교체 필요
+                "-6.2%",
+                delta_color="inverse"
             )
         
         st.markdown("---")
         
 except Exception as e:
     st.info("💡 기간을 선택하면 핵심 지표가 표시됩니다.")
+    st.error(f"오류: {e}")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -1130,10 +1249,10 @@ with st.sidebar:
         }
         days = period_map[quick_period]
         
-        # 계산된 날짜 표시
+        # 계산된 날짜 표시 (종료일 = 어제)
         from datetime import datetime, timedelta
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
+        end_date = datetime.now() - timedelta(days=1)  # 어제
+        start_date = end_date - timedelta(days=days - 1)  # days일 전부터
         
         st.info(f"📆 {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
         
@@ -1143,21 +1262,23 @@ with st.sidebar:
         st.session_state['period_label'] = quick_period
         
     else:  # 직접 선택
-        # 직접 날짜 선택
+        # 직접 날짜 선택 (최대 어제까지)
         from datetime import datetime, timedelta
+        
+        yesterday = datetime.now() - timedelta(days=1)
         
         col1, col2 = st.columns(2)
         with col1:
             start_date = st.date_input(
                 "시작일",
-                value=datetime.now() - timedelta(days=7),
-                max_value=datetime.now()
+                value=yesterday - timedelta(days=6),
+                max_value=yesterday
             )
         with col2:
             end_date = st.date_input(
                 "종료일",
-                value=datetime.now(),
-                max_value=datetime.now()
+                value=yesterday,
+                max_value=yesterday
             )
         
         if start_date and end_date:
