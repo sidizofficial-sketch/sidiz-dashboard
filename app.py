@@ -1,65 +1,48 @@
 import streamlit as st
 import google.generativeai as genai
 from google.cloud import bigquery
-import pandas as pd
-import json
-import datetime
+import json, datetime
 
-# 1. 페이지 설정
-st.set_page_config(page_title="SIDIZ AI Intelligence", page_icon="🪑", layout="wide")
+# 1. 초기 설정
+st.set_page_config(page_title="SIDIZ AI", page_icon="🪑", layout="wide")
 
-# 2. 보안 설정 및 데이터 준비
 try:
-    # Secrets 읽기
     info = json.loads(st.secrets["gcp_service_account"]["json_key"])
     client = bigquery.Client.from_service_account_info(info)
     
-    # Gemini API 설정
-    if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
+    if "gemini" in st.secrets:
         genai.configure(api_key=st.secrets["gemini"]["api_key"])
-        # 404 에러 방지를 위한 가장 안전한 모델명
-        model = genai.GenerativeModel('gemini-1.5-flash-latest') 
-        st.sidebar.success("✅ 시디즈 분석 엔진 연결 완료", icon="🚀")
-    else:
-        st.sidebar.error("❌ API 키를 확인해주세요.", icon="🚨")
-        st.stop()
-
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        st.sidebar.success("✅ 엔진 연결 완료")
+    
     today = datetime.date.today().strftime('%Y%m%d')
-
-    # 3. 데이터 분석 지침 (문자열 결합 방식 사용)
-    INSTRUCTION = """
-    당신은 시디즈(SIDIZ)의 데이터 분석 전문가입니다. 
-    GA4 BigQuery 데이터를 기반으로 답변하세요.
-    - 프로젝트 ID: """ + str(info['project_id']) + """
-    - 데이터셋: analytics_324424314
-    - 테이블: events_*
-    - 오늘 날짜: """ + today + """
-    """
+    INSTRUCTION = f"당신은 시디즈 데이터 전문가입니다. 프로젝트:{info['project_id']}, 데이터셋:analytics_324424314를 기반으로 SQL과 분석을 제공하세요. 오늘:{today}"
 
 except Exception as e:
-    st.error(f"초기 설정 오류: {e}", icon="🔥")
+    st.error(f"설정 오류: {e}")
     st.stop()
 
-# 4. UI 구성
-st.title("🪑 SIDIZ Data Intelligence Portal")
-st.markdown("---")
+# 2. UI 및 대화
+st.title("🪑 SIDIZ Data Intelligence")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
 
-# 5. 사용자 입력 및 AI 처리
-prompt = st.chat_input("데이터에게 궁금한 점을 물어보세요...")
-
-if prompt:
+# 3. 입력창 (이 부분이 잘리면 안 됩니다!)
+if prompt := st.chat_input("데이터에게 물어보세요"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("빅쿼리 데이터를 분석하고 있습니다..."):
-            try:
-                full
+        try:
+            response = model.generate_content(f"{INSTRUCTION}\n 질문: {prompt}")
+            answer = response.text
+            st.markdown(answer)
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+        except Exception as e:
+            st.error(f"오류: {e}")
