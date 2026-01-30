@@ -478,7 +478,7 @@ raw_events_current AS (
     ecommerce.transaction_id,
     ecommerce.purchase_revenue,
     items
-  FROM `{table_path}_*`
+  FROM `{table_path}`
   WHERE _TABLE_SUFFIX BETWEEN '{current_start}' AND '{current_end}'
 ),
 
@@ -495,7 +495,7 @@ raw_events_previous AS (
     ecommerce.transaction_id,
     ecommerce.purchase_revenue,
     items
-  FROM `{table_path}_*`
+  FROM `{table_path}`
   WHERE _TABLE_SUFFIX BETWEEN '{previous_start}' AND '{previous_end}'
 ),
 
