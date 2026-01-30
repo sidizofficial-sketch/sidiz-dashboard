@@ -53,7 +53,8 @@ try:
         naver_ad_secret_key = naver_ad_secret_key or st.secrets["naver_ads"].get("secret_key")
         naver_customer_id = naver_customer_id or st.secrets["naver_ads"].get("customer_id")
     
-    project_id = info['project_id']
+    # BigQuery 프로젝트 및 데이터셋 설정
+    project_id = "sidiz-458301"  # 고정값 사용
     dataset_id = "analytics_487246344"
     table_path = f"{project_id}.{dataset_id}.events_*"
     
@@ -554,7 +555,7 @@ SELECT
   c.bulk_order_count, c.bulk_order_revenue,
   
   -- 파생 지표 (전체 기간 총합으로 계산)
-  ROUND(SAFE_DIVIDE(c.new_users * 100.0, c.sessions), 2) as new_visit_rate,
+  ROUND(SAFE_DIVIDE(c.new_users * 100.0, c.active_users), 2) as new_visit_rate,
   ROUND(SAFE_DIVIDE(c.purchasers * 100.0, c.sessions), 2) as conversion_rate,
   ROUND(SAFE_DIVIDE(c.total_revenue, c.purchase_count), 0) as avg_order_value,
   ROUND(SAFE_DIVIDE(c.high_value_revenue, c.high_value_count), 0) as avg_high_value_order,
@@ -576,7 +577,7 @@ SELECT
   ROUND(SAFE_DIVIDE((c.bulk_order_revenue - p.bulk_order_revenue) * 100.0, p.bulk_order_revenue), 1) as bulk_order_revenue_change,
   
   -- 비율 지표 증감 (포인트 차이)
-  ROUND(SAFE_DIVIDE(c.new_users * 100.0, c.sessions) - SAFE_DIVIDE(p.new_users * 100.0, p.sessions), 2) as new_visit_rate_change_pp,
+  ROUND(SAFE_DIVIDE(c.new_users * 100.0, c.active_users) - SAFE_DIVIDE(p.new_users * 100.0, p.active_users), 2) as new_visit_rate_change_pp,
   ROUND(SAFE_DIVIDE(c.purchasers * 100.0, c.sessions) - SAFE_DIVIDE(p.purchasers * 100.0, p.sessions), 2) as conversion_rate_change_pp,
   ROUND(SAFE_DIVIDE((c.total_revenue / NULLIF(c.purchase_count, 0) - p.total_revenue / NULLIF(p.purchase_count, 0)) * 100.0, p.total_revenue / NULLIF(p.purchase_count, 0)), 1) as avg_order_value_change,
   ROUND(SAFE_DIVIDE((c.high_value_revenue / NULLIF(c.high_value_count, 0) - p.high_value_revenue / NULLIF(p.high_value_count, 0)) * 100.0, p.high_value_revenue / NULLIF(p.high_value_count, 0)), 1) as avg_high_value_order_change
