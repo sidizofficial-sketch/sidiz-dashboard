@@ -1436,29 +1436,75 @@ ORDER BY date DESC
         st.session_state['product_name'] = 'T50'
         st.rerun()
     
-    # 페이지 탐색 퍼널 분석
+    # 제품 종합 분석 (드롭다운 선택)
     st.markdown("---")
-    st.markdown("#### 🔍 페이지 탐색 분석")
+    st.markdown("#### 🪑 제품 종합 분석")
     
-    product_for_funnel = st.text_input(
-        "제품명 입력",
+    # 제품명 입력으로 검색
+    search_product = st.text_input(
+        "제품 검색",
         value="T50",
-        key="funnel_product",
+        key="product_search_sidebar",
         help="예: T50, T80, T100"
     )
     
-    if st.button("📊 이 제품 방문자가 함께 본 페이지 TOP10"):
-        if 'start_date' not in st.session_state:
-            from datetime import datetime, timedelta
-            end_date = datetime.now() - timedelta(days=1)
-            start_date = end_date - timedelta(days=6)
-            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
-            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
-            st.session_state['period_label'] = "최근 7일"
-        
-        st.session_state['page_funnel_product'] = product_for_funnel
-        st.session_state['show_page_funnel'] = True
-        st.rerun()
+    if search_product:
+        # 제품 검색 쿼리
+        try:
+            if 'start_date' not in st.session_state:
+                from datetime import datetime, timedelta
+                end_date = datetime.now() - timedelta(days=1)
+                start_date = end_date - timedelta(days=29)
+                temp_start = start_date.strftime('%Y%m%d')
+                temp_end = end_date.strftime('%Y%m%d')
+            else:
+                temp_start = st.session_state['start_date']
+                temp_end = st.session_state['end_date']
+            
+            product_search_query = f"""
+SELECT DISTINCT
+  item.item_name as product_name,
+  COUNT(*) as event_count
+FROM `{table_path}`,
+  UNNEST(items) as item
+WHERE _TABLE_SUFFIX BETWEEN '{temp_start}' AND '{temp_end}'
+  AND item.item_name LIKE '%{search_product}%'
+GROUP BY item.item_name
+ORDER BY event_count DESC
+LIMIT 20
+"""
+            search_df = client.query(product_search_query).to_dataframe()
+            
+            if not search_df.empty:
+                # 중복 선택 가능한 제품 리스트
+                selected_products_sidebar = st.multiselect(
+                    "분석할 제품 선택 (여러 개 가능)",
+                    search_df['product_name'].tolist(),
+                    default=[],
+                    key="selected_products_sidebar",
+                    help="분석할 제품을 선택하세요. 여러 개 선택 가능합니다."
+                )
+                
+                if st.button("📊 제품 종합 분석 시작", key="start_product_analysis"):
+                    if selected_products_sidebar:
+                        if 'start_date' not in st.session_state:
+                            from datetime import datetime, timedelta
+                            end_date = datetime.now() - timedelta(days=1)
+                            start_date = end_date - timedelta(days=29)
+                            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+                            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+                            st.session_state['period_label'] = "최근 30일"
+                        
+                        st.session_state['show_product_analysis'] = True
+                        st.session_state['product_name'] = search_product  # 검색어
+                        st.session_state['selected_products_list'] = selected_products_sidebar  # 선택된 제품들
+                        st.rerun()
+                    else:
+                        st.warning("최소 1개 제품을 선택하세요.")
+            else:
+                st.warning(f"'{search_product}' 제품을 찾을 수 없습니다.")
+        except Exception as e:
+            st.error(f"검색 오류: {str(e)}")
     
     st.markdown("---")
     st.markdown("#### 💬 질문 예시")
@@ -1479,107 +1525,6 @@ ORDER BY date DESC
         if 'show_product_analysis' in st.session_state:
             del st.session_state['show_product_analysis']
         st.rerun()
-
-# 페이지 탐색 퍼널 분석
-if 'show_page_funnel' in st.session_state and st.session_state['show_page_funnel']:
-    product_name = st.session_state.get('page_funnel_product', 'T50')
-    start_date = st.session_state['start_date']
-    end_date = st.session_state['end_date']
-    period_label = st.session_state.get('period_label', f"{start_date} ~ {end_date}")
-    
-    with st.chat_message("assistant"):
-        st.markdown(f"### 🔍 {product_name} 페이지 방문자 탐색 분석")
-        st.info(f"📅 분석 기간: {period_label}")
-        
-        with st.spinner(f"{product_name} 방문자 데이터 분석 중..."):
-            try:
-                # 2단계 분석
-                # 1단계: 제품 페이지 방문자 추출
-                visitors_query = f"""
-                CREATE TEMP TABLE product_visitors AS
-                SELECT DISTINCT user_pseudo_id
-                FROM `{table_path}`
-                WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
-                  AND event_name = 'page_view'
-                  AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%/products/{product_name.lower()}%'
-                """
-                
-                # 2단계: 해당 방문자들이 본 다른 페이지
-                funnel_query = f"""
-                WITH product_visitors AS (
-                  SELECT DISTINCT user_pseudo_id
-                  FROM `{table_path}`
-                  WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
-                    AND event_name = 'page_view'
-                    AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%/products/{product_name.lower()}%'
-                )
-                SELECT 
-                  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') as page_url,
-                  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_title') as page_title,
-                  COUNT(DISTINCT t.user_pseudo_id) as visitors,
-                  COUNT(*) as page_views
-                FROM `{table_path}` t
-                WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
-                  AND event_name = 'page_view'
-                  AND user_pseudo_id IN (SELECT user_pseudo_id FROM product_visitors)
-                  AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') NOT LIKE '%/products/{product_name.lower()}%'
-                  AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_title') IS NOT NULL
-                GROUP BY page_url, page_title
-                HAVING visitors > 1
-                ORDER BY visitors DESC
-                LIMIT 10
-                """
-                
-                funnel_df = client.query(funnel_query).to_dataframe()
-                
-                if not funnel_df.empty:
-                    st.markdown("#### 📊 함께 방문한 페이지 TOP10")
-                    
-                    # 시각화
-                    import plotly.express as px
-                    fig = px.bar(
-                        funnel_df,
-                        x='visitors',
-                        y='page_title',
-                        orientation='h',
-                        title=f'{product_name} 방문자가 함께 본 페이지',
-                        labels={'visitors': '방문자 수', 'page_title': '페이지'},
-                        text='visitors'
-                    )
-                    fig.update_traces(texttemplate='%{text:,}', textposition='outside')
-                    fig.update_layout(height=500, yaxis={'categoryorder':'total ascending'})
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # 상세 데이터
-                    st.markdown("#### 📋 상세 데이터")
-                    display_df = funnel_df.copy()
-                    display_df.columns = ['페이지 URL', '페이지 제목', '방문자 수', '페이지뷰']
-                    st.dataframe(display_df, use_container_width=True)
-                    
-                    # 인사이트
-                    st.markdown("#### 💡 인사이트")
-                    top_page = funnel_df.iloc[0]
-                    st.success(f"""
-**주요 발견사항:**
-- {product_name} 방문자의 {int(top_page['visitors'])}명이 "{top_page['page_title']}" 페이지도 방문했습니다
-- 총 {len(funnel_df)}개의 주요 이동 경로를 발견했습니다
-- 평균 페이지뷰: {funnel_df['page_views'].mean():.1f}회
-
-**추천:**
-- "{top_page['page_title']}" 페이지와 {product_name}의 크로스 프로모션 고려
-- 자주 함께 보는 페이지들 간 연관 콘텐츠 강화
-                    """)
-                    
-                else:
-                    st.warning(f"⚠️ {product_name} 페이지 방문자의 추가 탐색 데이터가 없습니다.")
-                
-            except Exception as e:
-                st.error(f"❌ 분석 오류: {str(e)}")
-                with st.expander("상세 오류"):
-                    st.code(str(e))
-        
-        # 분석 완료 후 플래그 제거
-        del st.session_state['show_page_funnel']
 
 # 제품 종합 분석 대시보드
 if 'show_product_analysis' in st.session_state and st.session_state['show_product_analysis']:
@@ -1792,26 +1737,135 @@ FROM product_events
                             st.markdown("---")
                             
                             # 상세 분석
-                            tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                                "👥 인구통계", "🌐 유입경로", "💰 매출분석", "📱 이용행태", "📈 전환율"
+                            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+                                "👥 인구통계", "🌐 유입경로", "💰 매출분석", "📱 이용행태", "📈 전환율", "🔍 페이지 탐색"
                             ])
                             
                             with tab1:
                                 st.markdown("#### 👥 인구통계학적 정보")
-                                # 디바이스 분포
-                                device_data = {
-                                    '디바이스': ['모바일', '데스크톱', '태블릿'],
-                                    '사용자수': [
-                                        int(row['mobile_users']),
-                                        int(row['desktop_users']),
-                                        int(row['tablet_users'])
-                                    ]
-                                }
-                                device_df = pd.DataFrame(device_data)
                                 
-                                fig_device = px.pie(device_df, names='디바이스', values='사용자수', 
-                                                   title='디바이스별 사용자 분포')
-                                st.plotly_chart(fig_device, use_container_width=True)
+                                # 인구통계 데이터 쿼리
+                                demo_query = f"""
+WITH product_users AS (
+  SELECT DISTINCT
+    user_pseudo_id,
+    device.category as device_category,
+    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'gender') as gender,
+    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'age') as age
+  FROM `{table_path}`,
+    UNNEST(items) as item
+  WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+    AND ({product_condition})
+)
+SELECT
+  COUNT(DISTINCT user_pseudo_id) as total_users,
+  COUNTIF(device_category = 'mobile') as mobile_users,
+  COUNTIF(device_category = 'desktop') as desktop_users,
+  COUNTIF(device_category = 'tablet') as tablet_users,
+  COUNTIF(gender = 'male') as male_users,
+  COUNTIF(gender = 'female') as female_users,
+  COUNTIF(age = '18-24') as age_18_24,
+  COUNTIF(age = '25-34') as age_25_34,
+  COUNTIF(age = '35-44') as age_35_44,
+  COUNTIF(age = '45-54') as age_45_54,
+  COUNTIF(age = '55-64') as age_55_64,
+  COUNTIF(age = '65+') as age_65_plus
+FROM product_users
+"""
+                                demo_df = client.query(demo_query).to_dataframe()
+                                
+                                if not demo_df.empty:
+                                    demo_row = demo_df.iloc[0]
+                                    
+                                    # 3개 차트를 나란히
+                                    col1, col2, col3 = st.columns(3)
+                                    
+                                    # 디바이스 분포
+                                    with col1:
+                                        device_data = {
+                                            '디바이스': ['모바일', '데스크톱', '태블릿'],
+                                            '사용자수': [
+                                                int(demo_row['mobile_users']),
+                                                int(demo_row['desktop_users']),
+                                                int(demo_row['tablet_users'])
+                                            ]
+                                        }
+                                        device_df = pd.DataFrame(device_data)
+                                        device_df = device_df[device_df['사용자수'] > 0]  # 0인 항목 제외
+                                        
+                                        fig_device = px.pie(device_df, names='디바이스', values='사용자수', 
+                                                           title='디바이스별 분포',
+                                                           color_discrete_sequence=['#636EFA', '#EF553B', '#00CC96'])
+                                        st.plotly_chart(fig_device, use_container_width=True)
+                                    
+                                    # 성별 분포
+                                    with col2:
+                                        gender_data = {
+                                            '성별': ['남성', '여성'],
+                                            '사용자수': [
+                                                int(demo_row['male_users']),
+                                                int(demo_row['female_users'])
+                                            ]
+                                        }
+                                        gender_df = pd.DataFrame(gender_data)
+                                        gender_df = gender_df[gender_df['사용자수'] > 0]
+                                        
+                                        if not gender_df.empty:
+                                            fig_gender = px.pie(gender_df, names='성별', values='사용자수', 
+                                                               title='성별 분포',
+                                                               color_discrete_sequence=['#AB63FA', '#FFA15A'])
+                                            st.plotly_chart(fig_gender, use_container_width=True)
+                                        else:
+                                            st.info("성별 데이터가 없습니다.")
+                                    
+                                    # 연령대 분포
+                                    with col3:
+                                        age_data = {
+                                            '연령대': ['18-24', '25-34', '35-44', '45-54', '55-64', '65+'],
+                                            '사용자수': [
+                                                int(demo_row['age_18_24']),
+                                                int(demo_row['age_25_34']),
+                                                int(demo_row['age_35_44']),
+                                                int(demo_row['age_45_54']),
+                                                int(demo_row['age_55_64']),
+                                                int(demo_row['age_65_plus'])
+                                            ]
+                                        }
+                                        age_df = pd.DataFrame(age_data)
+                                        age_df = age_df[age_df['사용자수'] > 0]
+                                        
+                                        if not age_df.empty:
+                                            fig_age = px.bar(age_df, x='연령대', y='사용자수', 
+                                                            title='연령대별 분포',
+                                                            color='사용자수',
+                                                            color_continuous_scale='Blues')
+                                            st.plotly_chart(fig_age, use_container_width=True)
+                                        else:
+                                            st.info("연령대 데이터가 없습니다.")
+                                    
+                                    # 인구통계 요약
+                                    st.markdown("---")
+                                    st.markdown("##### 📊 인구통계 요약")
+                                    
+                                    total = demo_row['total_users']
+                                    mobile_pct = demo_row['mobile_users'] / total * 100 if total > 0 else 0
+                                    desktop_pct = demo_row['desktop_users'] / total * 100 if total > 0 else 0
+                                    
+                                    summary = f"""
+**디바이스:**
+- 모바일: {int(demo_row['mobile_users']):,}명 ({mobile_pct:.1f}%)
+- 데스크톱: {int(demo_row['desktop_users']):,}명 ({desktop_pct:.1f}%)
+- 태블릿: {int(demo_row['tablet_users']):,}명
+
+**성별:**
+- 남성: {int(demo_row['male_users']):,}명
+- 여성: {int(demo_row['female_users']):,}명
+
+**주요 연령대:** {age_df.nlargest(1, '사용자수')['연령대'].values[0] if not age_df.empty else 'N/A'} ({age_df.nlargest(1, '사용자수')['사용자수'].values[0] if not age_df.empty else 0:,}명)
+"""
+                                    st.info(summary)
+                                else:
+                                    st.warning("인구통계 데이터가 없습니다.")
                             
                             with tab2:
                                 st.markdown("#### 🌐 유입 경로 분석")
@@ -1924,9 +1978,122 @@ WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
                                     else:
                                         st.warning(f"⚠️ {product_name} 제품의 전환율이 평균보다 {avg_conversion - product_conversion:.2f}%p 낮습니다.")
                             
+                            with tab6:
+                                st.markdown("#### 🔍 페이지 탐색 분석")
+                                st.info(f"📦 분석 대상: {', '.join(selected_products)}")
+                                
+                                # 제품 페이지 방문자가 함께 본 페이지 TOP10
+                                try:
+                                    # 선택된 제품들의 조건
+                                    product_page_condition = " OR ".join([
+                                        f"(SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%/products/{p.lower().replace(' ', '-')}%'"
+                                        for p in selected_products
+                                    ])
+                                    
+                                    funnel_query = f"""
+WITH product_visitors AS (
+  SELECT DISTINCT user_pseudo_id
+  FROM `{table_path}`
+  WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+    AND event_name = 'page_view'
+    AND ({product_page_condition})
+)
+SELECT 
+  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') as page_url,
+  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_title') as page_title,
+  COUNT(DISTINCT t.user_pseudo_id) as visitors,
+  COUNT(*) as page_views
+FROM `{table_path}` t
+WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+  AND event_name = 'page_view'
+  AND user_pseudo_id IN (SELECT user_pseudo_id FROM product_visitors)
+  AND NOT ({product_page_condition})  -- 선택한 제품 페이지 자체는 제외
+  AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_title') IS NOT NULL
+GROUP BY page_url, page_title
+HAVING visitors > 1
+ORDER BY visitors DESC
+LIMIT 10
+"""
+                                    
+                                    funnel_df = client.query(funnel_query).to_dataframe()
+                                    
+                                    if not funnel_df.empty:
+                                        st.markdown("##### 📊 함께 방문한 페이지 TOP10")
+                                        
+                                        # 시각화
+                                        fig = px.bar(
+                                            funnel_df,
+                                            x='visitors',
+                                            y='page_title',
+                                            orientation='h',
+                                            title=f'선택한 제품 방문자가 함께 본 페이지',
+                                            labels={'visitors': '방문자 수', 'page_title': '페이지'},
+                                            text='visitors',
+                                            color='visitors',
+                                            color_continuous_scale='Blues'
+                                        )
+                                        fig.update_traces(texttemplate='%{text:,}', textposition='outside')
+                                        fig.update_layout(height=500, yaxis={'categoryorder':'total ascending'})
+                                        st.plotly_chart(fig, use_container_width=True)
+                                        
+                                        # 상세 데이터
+                                        st.markdown("##### 📋 상세 데이터")
+                                        display_df = funnel_df.copy()
+                                        display_df.columns = ['페이지 URL', '페이지 제목', '방문자 수', '페이지뷰']
+                                        st.dataframe(display_df, use_container_width=True)
+                                        
+                                        # 인사이트
+                                        st.markdown("##### 💡 인사이트")
+                                        top_page = funnel_df.iloc[0]
+                                        st.success(f"""
+**주요 발견사항:**
+- 선택한 제품 방문자의 {int(top_page['visitors'])}명이 "{top_page['page_title']}" 페이지도 방문했습니다
+- 총 {len(funnel_df)}개의 주요 이동 경로를 발견했습니다
+- 평균 페이지뷰: {funnel_df['page_views'].mean():.1f}회
+
+**추천:**
+- "{top_page['page_title']}" 페이지와 선택한 제품의 크로스 프로모션 고려
+- 자주 함께 보는 페이지들 간 연관 콘텐츠 강화
+                                        """)
+                                        
+                                    else:
+                                        st.warning(f"⚠️ 선택한 제품 페이지 방문자의 추가 탐색 데이터가 없습니다.")
+                                
+                                except Exception as e:
+                                    st.error(f"❌ 페이지 탐색 분석 오류: {str(e)}")
+                                    with st.expander("상세 오류"):
+                                        st.code(str(e))
+                            
                             # 종합 인사이트
                             st.markdown("---")
                             st.markdown("### 💡 AI 인사이트 요약")
+                            
+                            # 정확한 비율 계산을 위한 인구통계 쿼리
+                            demo_summary_query = f"""
+WITH product_users AS (
+  SELECT DISTINCT
+    user_pseudo_id,
+    device.category as device_category
+  FROM `{table_path}`,
+    UNNEST(items) as item
+  WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+    AND ({product_condition})
+)
+SELECT
+  COUNT(DISTINCT user_pseudo_id) as total_unique_users,
+  COUNTIF(device_category = 'mobile') as mobile_count,
+  COUNTIF(device_category = 'desktop') as desktop_count
+FROM product_users
+"""
+                            demo_summary_df = client.query(demo_summary_query).to_dataframe()
+                            
+                            if not demo_summary_df.empty:
+                                demo_sum = demo_summary_df.iloc[0]
+                                mobile_pct = demo_sum['mobile_count'] / demo_sum['total_unique_users'] * 100 if demo_sum['total_unique_users'] > 0 else 0
+                                desktop_pct = demo_sum['desktop_count'] / demo_sum['total_unique_users'] * 100 if demo_sum['total_unique_users'] > 0 else 0
+                            else:
+                                mobile_pct = 0
+                                desktop_pct = 0
                             
                             insights = f"""
 **{product_name} 제품 분석 요약** ({period_label})
@@ -1938,12 +2105,12 @@ WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
 - 총 매출: ₩{int(row['total_revenue']):,} (평균 주문금액 ₩{int(row['avg_order_value']):,})
 
 **주요 발견사항:**
-1. **인구통계:** 모바일 사용자가 {int(row['mobile_users'] / row['total_visitors'] * 100)}% 를 차지
+1. **인구통계:** 모바일 사용자가 {mobile_pct:.1f}%, 데스크톱 사용자가 {desktop_pct:.1f}% 차지
 2. **구매 행태:** 평균 {row['avg_quantity_per_order']:.1f}개 구매
 3. **전환율:** 전체 평균 대비 {'높은' if row['conversion_rate'] > avg_conversion else '낮은'} 전환율
 
 **제안사항:**
-- 모바일 최적화 {'강화' if row['mobile_users'] > row['desktop_users'] else '필요'}
+- 모바일 최적화 {'강화' if mobile_pct > desktop_pct else '필요'}
 - 전환율 개선을 위한 {'장바구니 이탈 방지' if row['conversion_rate'] < avg_conversion else 'VIP 고객 관리'} 전략 수립
 """
                             st.info(insights)
