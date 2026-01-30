@@ -1372,19 +1372,77 @@ with st.sidebar:
     # 제품 분석
     st.markdown("### 🪑 제품 분석")
     
-    if st.button("📊 제품 분석 시작", type="primary", use_container_width=True):
-        # 기간 설정
-        if 'start_date' not in st.session_state:
-            from datetime import datetime, timedelta
-            end_date = datetime.now() - timedelta(days=1)
-            start_date = end_date - timedelta(days=29)
-            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
-            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
-            st.session_state['period_label'] = "최근 30일"
+    # 기간 설정 확인
+    if 'start_date' not in st.session_state:
+        from datetime import datetime, timedelta
+        end_date = datetime.now() - timedelta(days=1)
+        start_date = end_date - timedelta(days=29)
+        temp_start = start_date.strftime('%Y%m%d')
+        temp_end = end_date.strftime('%Y%m%d')
+    else:
+        temp_start = st.session_state['start_date']
+        temp_end = st.session_state['end_date']
+    
+    # 전체 제품 목록 로드
+    @st.cache_data(ttl=3600)
+    def load_all_products(start, end):
+        query = f"""
+SELECT DISTINCT
+  item.item_name as product_name,
+  COUNT(*) as event_count
+FROM `{table_path}`,
+  UNNEST(items) as item
+WHERE _TABLE_SUFFIX BETWEEN '{start}' AND '{end}'
+GROUP BY item.item_name
+ORDER BY event_count DESC
+LIMIT 100
+"""
+        return client.query(query).to_dataframe()
+    
+    try:
+        all_products_df = load_all_products(temp_start, temp_end)
         
-        st.session_state['show_product_analysis'] = True
-        st.session_state['product_name'] = 'T50'  # 기본값
-        st.rerun()
+        if not all_products_df.empty:
+            all_products = all_products_df['product_name'].tolist()
+            
+            # 제품 선택
+            st.info("💡 제품을 선택하고 '제품 분석 시작' 버튼을 누르세요")
+            
+            selected_products = st.multiselect(
+                "제품 검색 및 선택",
+                options=all_products,
+                default=[],
+                key="product_selector",
+                help="제품명을 입력하면 자동완성됩니다",
+                placeholder="예: T50, T80 등을 검색하세요"
+            )
+            
+            # 선택된 제품 표시
+            if selected_products:
+                st.success(f"✅ {len(selected_products)}개 제품 선택됨")
+                
+                # 제품 분석 시작 버튼
+                if st.button("📊 제품 분석 시작", type="primary", use_container_width=True):
+                    if 'start_date' not in st.session_state:
+                        from datetime import datetime, timedelta
+                        end_date = datetime.now() - timedelta(days=1)
+                        start_date = end_date - timedelta(days=29)
+                        st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+                        st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+                        st.session_state['period_label'] = "최근 30일"
+                    
+                    # session_state에 선택된 제품 저장
+                    st.session_state['selected_products_for_analysis'] = selected_products
+                    st.session_state['show_product_analysis'] = True
+                    st.session_state['product_name'] = selected_products[0].split()[0] if selected_products else 'Product'
+                    st.rerun()
+            else:
+                st.info("제품을 선택하세요")
+        else:
+            st.warning("제품 데이터를 불러올 수 없습니다.")
+    
+    except Exception as e:
+        st.error(f"제품 로드 오류: {str(e)}")
     
     st.markdown("---")
     st.markdown("#### 💬 질문 예시")
