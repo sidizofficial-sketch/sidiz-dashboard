@@ -67,13 +67,17 @@ try:
     - 데이터가 없으면 "데이터 없음"이라고 명시하세요
     
     [중요: 간단한 SQL만 작성하세요]
-    - 복잡한 서브쿼리, CTE, 윈도우 함수는 사용하지 마세요
+    - 복잡한 서브쿼리, CTE(WITH 절), 윈도우 함수는 절대 사용하지 마세요
+    - IN (SELECT ...) 같은 서브쿼리도 금지입니다
     - 기본적인 SELECT, WHERE, GROUP BY, ORDER BY만 사용하세요
     - 모든 괄호를 정확히 닫으세요
+    - 한 번의 SELECT로 해결할 수 없으면 "이 분석은 여러 단계가 필요합니다"라고 답하세요
     
     [테이블 정보]
     테이블: {table_path}
-    날짜 필터: _TABLE_SUFFIX BETWEEN '20240101' AND '20240131'
+    **중요: 데이터는 2025년 9월 1일부터 시작됩니다**
+    날짜 필터 예시: _TABLE_SUFFIX BETWEEN '20250901' AND '20260128'
+    (항상 20250901 이후 날짜를 사용하세요)
     
     [GA4 이벤트 구조]
     - event_date: 이벤트 날짜 (STRING, YYYYMMDD)
@@ -132,52 +136,75 @@ try:
     ```
     
     [제품 비교 분석 예시]
-    사용자가 "T80 구매율은?"이라고 물으면, items.item_name으로 제품별 비교:
+    사용자가 "T80 페이지 방문자는?"이라고 물으면:
     
     ```sql
-    WITH product_visitors AS (
-      SELECT 
-        items.item_name as product,
-        COUNT(DISTINCT user_pseudo_id) as visitors
-      FROM `{table_path}`
-      LEFT JOIN UNNEST(items) as items
-      WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
-        AND event_name IN ('view_item', 'add_to_cart', 'purchase')
-        AND items.item_name IN ('T50', 'T80', 'T100')
-      GROUP BY items.item_name
-    ),
-    product_buyers AS (
-      SELECT 
-        items.item_name as product,
-        COUNT(DISTINCT user_pseudo_id) as buyers
-      FROM `{table_path}`
-      LEFT JOIN UNNEST(items) as items
-      WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
-        AND event_name = 'purchase'
-        AND items.item_name IN ('T50', 'T80', 'T100')
-      GROUP BY items.item_name
-    )
+    -- 간단한 쿼리: 제품 페이지 방문자
     SELECT 
-      v.product,
-      v.visitors,
-      COALESCE(b.buyers, 0) as buyers,
-      ROUND(SAFE_DIVIDE(COALESCE(b.buyers, 0) * 100, v.visitors), 2) as conversion_rate
-    FROM product_visitors v
-    LEFT JOIN product_buyers b ON v.product = b.product
-    ORDER BY conversion_rate DESC
+      CASE 
+        WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%/products/T50%' THEN 'T50'
+        WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%/products/T80%' THEN 'T80'
+        WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%/products/T100%' THEN 'T100'
+      END as product,
+      COUNT(DISTINCT user_pseudo_id) as visitors
+    FROM `{table_path}`
+    WHERE _TABLE_SUFFIX BETWEEN '20250901' AND '20260128'
+      AND event_name = 'page_view'
+      AND ((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%/products/T50%'
+        OR (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%/products/T80%'
+        OR (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%/products/T100%')
+    GROUP BY product
+    ORDER BY visitors DESC
+    LIMIT 10
     ```
     
-    결과를 이렇게 표현:
-    "T80 구매율: 2.3%
-     vs T50: 3.1% (T50이 0.8%p 높음)
-     vs T100: 1.9% (T80이 0.4%p 높음)"
+    사용자가 "T80 구매자는?"이라고 물으면:
+    
+    ```sql
+    -- 간단한 쿼리: 제품별 구매자
+    SELECT 
+      items.item_name as product,
+      COUNT(DISTINCT user_pseudo_id) as buyers,
+      SUM(items.quantity) as total_quantity
+    FROM `{table_path}`,
+      UNNEST(items) as items
+    WHERE _TABLE_SUFFIX BETWEEN '20250901' AND '20260128'
+      AND event_name = 'purchase'
+      AND items.item_name IN ('T50', 'T80', 'T100')
+    GROUP BY items.item_name
+    ORDER BY buyers DESC
+    LIMIT 10
+    ```
+    
+    [복잡한 분석 처리 방법]
+    "T50 페이지 방문자가 함께 본 페이지"처럼 복잡한 질문이 들어오면:
+    
+    1단계: "이 분석은 두 단계로 나눠서 진행하겠습니다"라고 답하세요
+    2단계: 먼저 T50 페이지 방문 현황만 조회
+    
+    ```sql
+    -- 1단계: T50 페이지 방문 현황
+    SELECT 
+      (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_title') as page_title,
+      COUNT(DISTINCT user_pseudo_id) as visitors
+    FROM `{table_path}`
+    WHERE _TABLE_SUFFIX BETWEEN '20250901' AND '20260128'
+      AND event_name = 'page_view'
+      AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%T50%'
+    GROUP BY page_title
+    ORDER BY visitors DESC
+    LIMIT 10
+    ```
+    
+    그 다음 "다음 단계로 다른 페이지 분석을 원하시면 말씀해주세요"라고 안내하세요.
     
     [SQL 작성 규칙]
     1. 반드시 ```sql 코드블록 안에 작성
-    2. **제품 데이터:** items.item_name 사용 (LEFT JOIN UNNEST(items) as items 필수)
+    2. **제품 데이터:** items.item_name 사용 (UNNEST(items) as items 필수)
     3. **페이지 방문:** event_params의 page_location 사용
     4. 날짜는 _TABLE_SUFFIX 사용
     5. 항상 LIMIT 100 추가
+    6. **절대 금지:** WITH 절, IN (SELECT ...) 서브쿼리
     
     중요: 복잡한 분석이 필요하면 여러 개의 간단한 쿼리로 나누세요.
     """
@@ -404,17 +431,18 @@ st.markdown("### 📊 핵심 지표")
 
 # 전체 기간 KPI 조회
 try:
-    # 기본 기간 설정 (종료일 = 어제)
+    # 기본 기간 설정 (종료일 = 어제, 시작일 = 2025-09-01 이후)
     if 'start_date' not in st.session_state:
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, date
+        min_date = date(2025, 9, 1)  # 데이터 시작일
         end_date = datetime.now() - timedelta(days=1)  # 어제
-        start_date = end_date - timedelta(days=6)  # 최근 7일
+        start_date = max(end_date - timedelta(days=6), datetime.combine(min_date, datetime.min.time()))  # 최근 7일 또는 2025-09-01
         st.session_state['start_date'] = start_date.strftime('%Y%m%d')
         st.session_state['end_date'] = end_date.strftime('%Y%m%d')
         st.session_state['period_label'] = "최근 7일"
     
-    current_start = st.session_state.get('start_date', '20240101')
-    current_end = st.session_state.get('end_date', '20240131')
+    current_start = st.session_state.get('start_date', '20250901')
+    current_end = st.session_state.get('end_date', '20260128')
     
     # 전기 기간 계산 (동일 일수만큼 이전)
     from datetime import datetime, timedelta
@@ -428,60 +456,98 @@ try:
     previous_start = previous_start_dt.strftime('%Y%m%d')
     previous_end = previous_end_dt.strftime('%Y%m%d')
     
-    # KPI 쿼리 (현재 기간 + 전기 기간)
+    # KPI 쿼리 (현재 기간 + 전기 기간) - GA4 표준 정의
     kpi_query = f"""
     WITH current_period AS (
         SELECT 
-            COUNT(DISTINCT user_pseudo_id) as total_users,
-            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as purchasers,
-            COUNTIF(event_name = 'purchase') as total_purchases,
-            SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END) as total_revenue,
+            -- 세션: (user_pseudo_id + ga_session_id) 조합
+            COUNT(DISTINCT CONCAT(user_pseudo_id, '.', 
+                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id')
+            )) as sessions,
+            
+            -- 제품 조회: view_item 이벤트
+            COUNTIF(event_name = 'view_item') as view_item_count,
+            
+            -- 장바구니 담기: add_to_cart 이벤트
             COUNTIF(event_name = 'add_to_cart') as add_to_cart_count,
-            COUNTIF(event_name = 'begin_checkout') as begin_checkout_count
+            
+            -- 장바구니 조회: view_cart 이벤트
+            COUNTIF(event_name = 'view_cart') as view_cart_count,
+            
+            -- 결제 페이지 진입: begin_checkout 이벤트
+            COUNTIF(event_name = 'begin_checkout') as begin_checkout_count,
+            
+            -- 구매 완료: purchase 이벤트 (트랜잭션 수)
+            COUNTIF(event_name = 'purchase') as purchase_count,
+            
+            -- 구매 고객 수
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as purchasers,
+            
+            -- 총 매출
+            SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END) as total_revenue,
+            
+            -- 총 판매수량 (items의 quantity 합)
+            SUM(CASE WHEN event_name = 'purchase' THEN 
+                (SELECT SUM(item.quantity) FROM UNNEST(items) as item)
+            END) as total_quantity
+            
         FROM `{table_path}`
         WHERE _TABLE_SUFFIX BETWEEN '{current_start}' AND '{current_end}'
     ),
     previous_period AS (
         SELECT 
-            COUNT(DISTINCT user_pseudo_id) as total_users,
-            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as purchasers,
-            COUNTIF(event_name = 'purchase') as total_purchases,
-            SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END) as total_revenue,
+            COUNT(DISTINCT CONCAT(user_pseudo_id, '.', 
+                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id')
+            )) as sessions,
+            COUNTIF(event_name = 'view_item') as view_item_count,
             COUNTIF(event_name = 'add_to_cart') as add_to_cart_count,
-            COUNTIF(event_name = 'begin_checkout') as begin_checkout_count
+            COUNTIF(event_name = 'view_cart') as view_cart_count,
+            COUNTIF(event_name = 'begin_checkout') as begin_checkout_count,
+            COUNTIF(event_name = 'purchase') as purchase_count,
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as purchasers,
+            SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END) as total_revenue,
+            SUM(CASE WHEN event_name = 'purchase' THEN 
+                (SELECT SUM(item.quantity) FROM UNNEST(items) as item)
+            END) as total_quantity
         FROM `{table_path}`
         WHERE _TABLE_SUFFIX BETWEEN '{previous_start}' AND '{previous_end}'
     )
     SELECT 
         -- 현재 기간
-        c.total_users,
-        c.purchasers,
-        c.total_purchases,
-        c.total_revenue,
+        c.sessions,
+        c.view_item_count,
         c.add_to_cart_count,
+        c.view_cart_count,
         c.begin_checkout_count,
-        ROUND(SAFE_DIVIDE(c.purchasers * 100, c.total_users), 2) as conversion_rate,
-        ROUND(SAFE_DIVIDE(c.total_revenue, c.total_purchases), 0) as avg_order_value,
+        c.purchase_count,
+        c.purchasers,
+        c.total_revenue,
+        c.total_quantity,
+        ROUND(SAFE_DIVIDE(c.purchasers * 100, c.sessions), 2) as conversion_rate,
+        ROUND(SAFE_DIVIDE(c.total_revenue, c.purchase_count), 0) as avg_order_value,
         
         -- 전기 기간
-        p.total_users as prev_users,
-        p.purchasers as prev_purchasers,
-        p.total_purchases as prev_purchases,
-        p.total_revenue as prev_revenue,
+        p.sessions as prev_sessions,
+        p.view_item_count as prev_view_item,
         p.add_to_cart_count as prev_add_to_cart,
+        p.view_cart_count as prev_view_cart,
         p.begin_checkout_count as prev_begin_checkout,
-        ROUND(SAFE_DIVIDE(p.purchasers * 100, p.total_users), 2) as prev_conversion_rate,
-        ROUND(SAFE_DIVIDE(p.total_revenue, p.total_purchases), 0) as prev_avg_order_value,
+        p.purchase_count as prev_purchase_count,
+        p.purchasers as prev_purchasers,
+        p.total_revenue as prev_revenue,
+        p.total_quantity as prev_quantity,
         
         -- 증감율
-        ROUND(SAFE_DIVIDE((c.total_users - p.total_users) * 100, p.total_users), 1) as users_change_pct,
-        ROUND(SAFE_DIVIDE((c.total_purchases - p.total_purchases) * 100, p.total_purchases), 1) as purchases_change_pct,
+        ROUND(SAFE_DIVIDE((c.sessions - p.sessions) * 100, p.sessions), 1) as sessions_change_pct,
+        ROUND(SAFE_DIVIDE((c.view_item_count - p.view_item_count) * 100, p.view_item_count), 1) as view_item_change_pct,
+        ROUND(SAFE_DIVIDE((c.add_to_cart_count - p.add_to_cart_count) * 100, p.add_to_cart_count), 1) as cart_change_pct,
+        ROUND(SAFE_DIVIDE((c.view_cart_count - p.view_cart_count) * 100, p.view_cart_count), 1) as view_cart_change_pct,
+        ROUND(SAFE_DIVIDE((c.begin_checkout_count - p.begin_checkout_count) * 100, p.begin_checkout_count), 1) as checkout_change_pct,
         ROUND(SAFE_DIVIDE((c.purchasers - p.purchasers) * 100, p.purchasers), 1) as purchasers_change_pct,
         ROUND(SAFE_DIVIDE((c.total_revenue - p.total_revenue) * 100, p.total_revenue), 1) as revenue_change_pct,
-        ROUND(SAFE_DIVIDE(((c.purchasers * 100.0 / c.total_users) - (p.purchasers * 100.0 / p.total_users)), 1), 1) as conversion_change_pp,
-        ROUND(SAFE_DIVIDE(((c.total_revenue / c.total_purchases) - (p.total_revenue / p.total_purchases)) * 100, (p.total_revenue / p.total_purchases)), 1) as aov_change_pct,
-        ROUND(SAFE_DIVIDE((c.add_to_cart_count - p.add_to_cart_count) * 100, p.add_to_cart_count), 1) as cart_change_pct,
-        ROUND(SAFE_DIVIDE((c.begin_checkout_count - p.begin_checkout_count) * 100, p.begin_checkout_count), 1) as checkout_change_pct
+        ROUND(SAFE_DIVIDE((c.total_quantity - p.total_quantity) * 100, p.total_quantity), 1) as quantity_change_pct,
+        ROUND(SAFE_DIVIDE(((c.purchasers * 100.0 / c.sessions) - (p.purchasers * 100.0 / p.sessions)), 1), 1) as conversion_change_pp,
+        ROUND(SAFE_DIVIDE(((c.total_revenue / c.purchase_count) - (p.total_revenue / p.purchase_count)) * 100, (p.total_revenue / p.purchase_count)), 1) as aov_change_pct
     FROM current_period c, previous_period p
     """
     
@@ -496,16 +562,18 @@ try:
         with col1:
             st.metric(
                 "세션",
-                f"{int(kpi['total_users']):,}",
-                f"{kpi['users_change_pct']:+.1f}%" if pd.notna(kpi['users_change_pct']) else None,
+                f"{int(kpi['sessions']):,}",
+                f"{kpi['sessions_change_pct']:+.1f}%" if pd.notna(kpi['sessions_change_pct']) else None,
                 delta_color="normal"
             )
         
         with col2:
             st.metric(
                 "제품 조회",
-                f"{int(kpi['total_purchases'] + kpi['add_to_cart_count']):,}",  # 임시: 제품 조회 대신 구매+장바구니
-                help="제품 상세 페이지 조회 수"
+                f"{int(kpi['view_item_count']):,}",
+                f"{kpi['view_item_change_pct']:+.1f}%" if pd.notna(kpi['view_item_change_pct']) else None,
+                delta_color="normal",
+                help="view_item 이벤트 수"
             )
         
         with col3:
@@ -519,8 +587,8 @@ try:
         with col4:
             st.metric(
                 "장바구니 조회",
-                f"{int(kpi['begin_checkout_count']):,}",
-                f"{kpi['checkout_change_pct']:+.1f}%" if pd.notna(kpi['checkout_change_pct']) else None,
+                f"{int(kpi['view_cart_count']):,}",
+                f"{kpi['view_cart_change_pct']:+.1f}%" if pd.notna(kpi['view_cart_change_pct']) else None,
                 delta_color="normal"
             )
         
@@ -540,7 +608,8 @@ try:
                 "구매 완료",
                 f"{int(kpi['purchasers']):,}",
                 f"{kpi['purchasers_change_pct']:+.1f}%" if pd.notna(kpi['purchasers_change_pct']) else None,
-                delta_color="normal"
+                delta_color="normal",
+                help="구매한 고객 수"
             )
         
         with col7:
@@ -553,24 +622,25 @@ try:
         
         with col8:
             st.metric(
-                "총 매출 (회원할인가 합)",
-                f"{int(kpi['total_revenue']):,}",
+                "총 매출",
+                f"₩{int(kpi['total_revenue']):,}",
                 f"{kpi['revenue_change_pct']:+.1f}%" if pd.notna(kpi['revenue_change_pct']) else None,
-                delta_color="normal"
+                delta_color="normal",
+                help="회원할인가 합"
             )
         
         with col9:
             st.metric(
                 "총 판매수량",
-                f"{int(kpi['total_purchases']):,}",
-                f"{kpi['purchases_change_pct']:+.1f}%" if pd.notna(kpi['purchases_change_pct']) else None,
+                f"{int(kpi['total_quantity']) if pd.notna(kpi['total_quantity']) else 0:,}",
+                f"{kpi['quantity_change_pct']:+.1f}%" if pd.notna(kpi['quantity_change_pct']) else None,
                 delta_color="normal"
             )
         
         with col10:
             st.metric(
                 "평균 주문금액",
-                f"₩{int(kpi['avg_order_value']):,}",
+                f"₩{int(kpi['avg_order_value']) if pd.notna(kpi['avg_order_value']) else 0:,}",
                 f"{kpi['aov_change_pct']:+.1f}%" if pd.notna(kpi['aov_change_pct']) else None,
                 delta_color="normal"
             )
@@ -786,15 +856,16 @@ if prompt := st.chat_input("질문을 입력하세요 (예: T50 분석해줘)"):
                             st.info(f"📅 분석 기간: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} ({days}일)")
                             period_detected = True
                     
-                    # 기간이 설정되어 있으면 사용, 없으면 최근 7일 기본값
+                    # 기간이 설정되어 있으면 사용, 없으면 최근 7일 기본값 (2025-09-01 이후)
                     if 'start_date' in st.session_state:
                         temp_start = st.session_state['start_date']
                         temp_end = st.session_state['end_date']
                     else:
-                        # 기본값: 최근 7일
-                        from datetime import datetime, timedelta
-                        end_date = datetime.now()
-                        start_date = end_date - timedelta(days=7)
+                        # 기본값: 최근 7일 (2025-09-01 이후)
+                        from datetime import datetime, timedelta, date
+                        min_date = date(2025, 9, 1)  # 데이터 시작일
+                        end_date = datetime.now() - timedelta(days=1)  # 어제
+                        start_date = max(end_date - timedelta(days=6), datetime.combine(min_date, datetime.min.time()))
                         
                         temp_start = start_date.strftime('%Y%m%d')
                         temp_end = end_date.strftime('%Y%m%d')
@@ -1262,22 +1333,25 @@ with st.sidebar:
         st.session_state['period_label'] = quick_period
         
     else:  # 직접 선택
-        # 직접 날짜 선택 (최대 어제까지)
-        from datetime import datetime, timedelta
+        # 직접 날짜 선택 (2025-09-01부터 어제까지)
+        from datetime import datetime, timedelta, date
         
+        min_date = date(2025, 9, 1)  # 데이터 시작일
         yesterday = datetime.now() - timedelta(days=1)
         
         col1, col2 = st.columns(2)
         with col1:
             start_date = st.date_input(
                 "시작일",
-                value=yesterday - timedelta(days=6),
+                value=max(yesterday - timedelta(days=6), min_date),
+                min_value=min_date,
                 max_value=yesterday
             )
         with col2:
             end_date = st.date_input(
                 "종료일",
                 value=yesterday,
+                min_value=min_date,
                 max_value=yesterday
             )
         
