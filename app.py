@@ -426,8 +426,8 @@ def get_naver_keyword_stats(keywords):
 # 3. UI 구성
 st.title("🪑 SIDIZ AI Intelligence Dashboard")
 
-# 핵심 KPI 대시보드 (상단 고정)
-st.markdown("### 📊 핵심 지표")
+# 핵심 KPI 대시보드 (상단 고정) - 18개 지표
+st.markdown("## 📊 KPI Overview")
 
 # 전체 기간 KPI 조회
 try:
@@ -456,205 +456,214 @@ try:
     previous_start = previous_start_dt.strftime('%Y%m%d')
     previous_end = previous_end_dt.strftime('%Y%m%d')
     
-    # KPI 쿼리 (현재 기간 + 전기 기간) - GA4 표준 정의
+    # 기간 표시
+    st.info(f"📅 분석 기간: {current_start_dt.strftime('%Y.%m.%d')} ~ {current_end_dt.strftime('%Y.%m.%d')} (최근 {period_days}일) | "
+            f"비교 기간: {previous_start_dt.strftime('%Y.%m.%d')} ~ {previous_end_dt.strftime('%Y.%m.%d')}")
+    
+    # KPI 쿼리 (20개 지표 - 정의서 기준 + 고가품 평균 + 대량 구매)
     kpi_query = f"""
-    WITH current_period AS (
-        SELECT 
-            -- 세션: (user_pseudo_id + ga_session_id) 조합
-            COUNT(DISTINCT CONCAT(user_pseudo_id, '.', 
-                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id')
-            )) as sessions,
-            
-            -- 제품 조회: view_item 이벤트
-            COUNTIF(event_name = 'view_item') as view_item_count,
-            
-            -- 장바구니 담기: add_to_cart 이벤트
-            COUNTIF(event_name = 'add_to_cart') as add_to_cart_count,
-            
-            -- 장바구니 조회: view_cart 이벤트
-            COUNTIF(event_name = 'view_cart') as view_cart_count,
-            
-            -- 결제 페이지 진입: begin_checkout 이벤트
-            COUNTIF(event_name = 'begin_checkout') as begin_checkout_count,
-            
-            -- 구매 완료: purchase 이벤트 (트랜잭션 수)
-            COUNTIF(event_name = 'purchase') as purchase_count,
-            
-            -- 구매 고객 수
-            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as purchasers,
-            
-            -- 총 매출
-            SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END) as total_revenue,
-            
-            -- 총 판매수량 (items의 quantity 합)
-            SUM(CASE WHEN event_name = 'purchase' THEN 
-                (SELECT SUM(item.quantity) FROM UNNEST(items) as item)
-            END) as total_quantity
-            
-        FROM `{table_path}`
-        WHERE _TABLE_SUFFIX BETWEEN '{current_start}' AND '{current_end}'
-    ),
-    previous_period AS (
-        SELECT 
-            COUNT(DISTINCT CONCAT(user_pseudo_id, '.', 
-                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id')
-            )) as sessions,
-            COUNTIF(event_name = 'view_item') as view_item_count,
-            COUNTIF(event_name = 'add_to_cart') as add_to_cart_count,
-            COUNTIF(event_name = 'view_cart') as view_cart_count,
-            COUNTIF(event_name = 'begin_checkout') as begin_checkout_count,
-            COUNTIF(event_name = 'purchase') as purchase_count,
-            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as purchasers,
-            SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END) as total_revenue,
-            SUM(CASE WHEN event_name = 'purchase' THEN 
-                (SELECT SUM(item.quantity) FROM UNNEST(items) as item)
-            END) as total_quantity
-        FROM `{table_path}`
-        WHERE _TABLE_SUFFIX BETWEEN '{previous_start}' AND '{previous_end}'
-    )
+WITH current_period AS (
     SELECT 
-        -- 현재 기간
-        c.sessions,
-        c.view_item_count,
-        c.add_to_cart_count,
-        c.view_cart_count,
-        c.begin_checkout_count,
-        c.purchase_count,
-        c.purchasers,
-        c.total_revenue,
-        c.total_quantity,
-        ROUND(SAFE_DIVIDE(c.purchasers * 100, c.sessions), 2) as conversion_rate,
-        ROUND(SAFE_DIVIDE(c.total_revenue, c.purchase_count), 0) as avg_order_value,
+        -- 📈 트래픽 지표 (6개)
+        COUNT(DISTINCT CONCAT(user_pseudo_id, '.', 
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id')
+        )) as sessions,
+        COUNTIF(event_name = 'page_view') as page_views,
+        COUNT(DISTINCT user_pseudo_id) as active_users,
+        COUNTIF(event_name = 'first_visit') as new_users,
+        COUNTIF(event_name = 'sign_up') as sign_ups,
         
-        -- 전기 기간
-        p.sessions as prev_sessions,
-        p.view_item_count as prev_view_item,
-        p.add_to_cart_count as prev_add_to_cart,
-        p.view_cart_count as prev_view_cart,
-        p.begin_checkout_count as prev_begin_checkout,
-        p.purchase_count as prev_purchase_count,
-        p.purchasers as prev_purchasers,
-        p.total_revenue as prev_revenue,
-        p.total_quantity as prev_quantity,
+        -- 💰 구매 지표 (기본)
+        COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as purchasers,
+        COUNTIF(event_name = 'purchase') as purchase_count,
+        SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END) as total_revenue,
+        SUM(CASE WHEN event_name = 'purchase' THEN 
+            (SELECT SUM(item.quantity) FROM UNNEST(items) as item)
+        END) as total_quantity,
         
-        -- 증감율
-        ROUND(SAFE_DIVIDE((c.sessions - p.sessions) * 100, p.sessions), 1) as sessions_change_pct,
-        ROUND(SAFE_DIVIDE((c.view_item_count - p.view_item_count) * 100, p.view_item_count), 1) as view_item_change_pct,
-        ROUND(SAFE_DIVIDE((c.add_to_cart_count - p.add_to_cart_count) * 100, p.add_to_cart_count), 1) as cart_change_pct,
-        ROUND(SAFE_DIVIDE((c.view_cart_count - p.view_cart_count) * 100, p.view_cart_count), 1) as view_cart_change_pct,
-        ROUND(SAFE_DIVIDE((c.begin_checkout_count - p.begin_checkout_count) * 100, p.begin_checkout_count), 1) as checkout_change_pct,
-        ROUND(SAFE_DIVIDE((c.purchasers - p.purchasers) * 100, p.purchasers), 1) as purchasers_change_pct,
-        ROUND(SAFE_DIVIDE((c.total_revenue - p.total_revenue) * 100, p.total_revenue), 1) as revenue_change_pct,
-        ROUND(SAFE_DIVIDE((c.total_quantity - p.total_quantity) * 100, p.total_quantity), 1) as quantity_change_pct,
-        ROUND(SAFE_DIVIDE(((c.purchasers * 100.0 / c.sessions) - (p.purchasers * 100.0 / p.sessions)), 1), 1) as conversion_change_pp,
-        ROUND(SAFE_DIVIDE(((c.total_revenue / c.purchase_count) - (p.total_revenue / p.purchase_count)) * 100, (p.total_revenue / p.purchase_count)), 1) as aov_change_pct
-    FROM current_period c, previous_period p
-    """
+        -- 💰 10만원 초과 제품 포함 주문의 평균 (수정된 로직)
+        -- 장바구니에 10만원 초과 제품이 1개라도 있으면 포함
+        -- 10만원 이하 제품만 구매한 경우 제외
+        SUM(CASE 
+            WHEN event_name = 'purchase' 
+            AND (SELECT LOGICAL_OR(item.price > 100000) FROM UNNEST(items) as item) = TRUE
+            THEN ecommerce.purchase_revenue 
+        END) as high_value_included_revenue,
+        COUNTIF(
+            event_name = 'purchase' 
+            AND (SELECT LOGICAL_OR(item.price > 100000) FROM UNNEST(items) as item) = TRUE
+        ) as high_value_included_count,
+        
+        -- 💰💰 대량 구매 (150만원 이상)
+        COUNTIF(event_name = 'purchase' AND ecommerce.purchase_revenue >= 1500000) as bulk_order_count,
+        SUM(CASE WHEN event_name = 'purchase' AND ecommerce.purchase_revenue >= 1500000 
+            THEN ecommerce.purchase_revenue END) as bulk_order_revenue,
+        
+        -- 환불
+        COUNTIF(event_name = 'refund') as refunds,
+        
+        -- 🎯 전환 지표 (4개)
+        COUNTIF(event_name = 'product_registration') as product_registrations,
+        COUNTIF(event_name = 'business_inquiry') as business_inquiries,
+        COUNTIF(event_name = 'review_write') as review_writes,
+        COUNTIF(event_name = 'inquiry_write') as inquiry_writes
+        
+    FROM `{table_path}`
+    WHERE _TABLE_SUFFIX BETWEEN '{current_start}' AND '{current_end}'
+),
+previous_period AS (
+    SELECT 
+        COUNT(DISTINCT CONCAT(user_pseudo_id, '.', 
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id')
+        )) as sessions,
+        COUNTIF(event_name = 'page_view') as page_views,
+        COUNT(DISTINCT user_pseudo_id) as active_users,
+        COUNTIF(event_name = 'first_visit') as new_users,
+        COUNTIF(event_name = 'sign_up') as sign_ups,
+        COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as purchasers,
+        COUNTIF(event_name = 'purchase') as purchase_count,
+        SUM(CASE WHEN event_name = 'purchase' THEN ecommerce.purchase_revenue END) as total_revenue,
+        SUM(CASE WHEN event_name = 'purchase' THEN 
+            (SELECT SUM(item.quantity) FROM UNNEST(items) as item)
+        END) as total_quantity,
+        SUM(CASE 
+            WHEN event_name = 'purchase' 
+            AND (SELECT LOGICAL_OR(item.price > 100000) FROM UNNEST(items) as item) = TRUE
+            THEN ecommerce.purchase_revenue 
+        END) as high_value_included_revenue,
+        COUNTIF(
+            event_name = 'purchase' 
+            AND (SELECT LOGICAL_OR(item.price > 100000) FROM UNNEST(items) as item) = TRUE
+        ) as high_value_included_count,
+        COUNTIF(event_name = 'purchase' AND ecommerce.purchase_revenue >= 1500000) as bulk_order_count,
+        SUM(CASE WHEN event_name = 'purchase' AND ecommerce.purchase_revenue >= 1500000 
+            THEN ecommerce.purchase_revenue END) as bulk_order_revenue,
+        COUNTIF(event_name = 'refund') as refunds,
+        COUNTIF(event_name = 'product_registration') as product_registrations,
+        COUNTIF(event_name = 'business_inquiry') as business_inquiries,
+        COUNTIF(event_name = 'review_write') as review_writes,
+        COUNTIF(event_name = 'inquiry_write') as inquiry_writes
+    FROM `{table_path}`
+    WHERE _TABLE_SUFFIX BETWEEN '{previous_start}' AND '{previous_end}'
+)
+SELECT
+    -- 현재 기간 데이터
+    c.sessions, c.page_views, c.active_users, c.new_users,
+    ROUND(SAFE_DIVIDE(c.new_users * 100, c.sessions), 2) as new_visit_rate,
+    c.sign_ups,
+    c.purchasers, c.total_quantity, c.total_revenue,
+    ROUND(SAFE_DIVIDE(c.purchasers * 100, c.sessions), 2) as conversion_rate,
+    ROUND(SAFE_DIVIDE(c.total_revenue, c.purchase_count), 0) as avg_order_value,
+    ROUND(SAFE_DIVIDE(c.high_value_included_revenue, c.high_value_included_count), 0) as avg_high_value_order,
+    c.bulk_order_count,
+    c.bulk_order_revenue,
+    c.refunds,
+    ROUND(SAFE_DIVIDE(c.refunds * 100, c.purchase_count), 2) as refund_rate,
+    c.product_registrations, c.business_inquiries, c.review_writes, c.inquiry_writes,
+    
+    -- 전기 대비 증감율
+    ROUND(SAFE_DIVIDE((c.sessions - p.sessions) * 100, p.sessions), 1) as sessions_change,
+    ROUND(SAFE_DIVIDE((c.page_views - p.page_views) * 100, p.page_views), 1) as page_views_change,
+    ROUND(SAFE_DIVIDE((c.active_users - p.active_users) * 100, p.active_users), 1) as active_users_change,
+    ROUND(SAFE_DIVIDE((c.new_users - p.new_users) * 100, p.new_users), 1) as new_users_change,
+    ROUND(SAFE_DIVIDE((c.new_users * 100 / NULLIF(c.sessions, 0) - p.new_users * 100 / NULLIF(p.sessions, 0)) * 100, 
+        p.new_users * 100 / NULLIF(p.sessions, 0)), 1) as new_visit_rate_change,
+    ROUND(SAFE_DIVIDE((c.sign_ups - p.sign_ups) * 100, p.sign_ups), 1) as sign_ups_change,
+    ROUND(SAFE_DIVIDE((c.purchasers - p.purchasers) * 100, p.purchasers), 1) as purchasers_change,
+    ROUND(SAFE_DIVIDE((c.total_quantity - p.total_quantity) * 100, p.total_quantity), 1) as total_quantity_change,
+    ROUND(SAFE_DIVIDE((c.total_revenue - p.total_revenue) * 100, p.total_revenue), 1) as total_revenue_change,
+    ROUND(SAFE_DIVIDE((c.purchasers * 100 / NULLIF(c.sessions, 0) - p.purchasers * 100 / NULLIF(p.sessions, 0)) * 100,
+        p.purchasers * 100 / NULLIF(p.sessions, 0)), 1) as conversion_rate_change,
+    ROUND(SAFE_DIVIDE((c.total_revenue / NULLIF(c.purchase_count, 0) - p.total_revenue / NULLIF(p.purchase_count, 0)) * 100,
+        p.total_revenue / NULLIF(p.purchase_count, 0)), 1) as avg_order_value_change,
+    ROUND(SAFE_DIVIDE((c.high_value_included_revenue / NULLIF(c.high_value_included_count, 0) - p.high_value_included_revenue / NULLIF(p.high_value_included_count, 0)) * 100,
+        p.high_value_included_revenue / NULLIF(p.high_value_included_count, 0)), 1) as avg_high_value_order_change,
+    ROUND(SAFE_DIVIDE((c.bulk_order_count - p.bulk_order_count) * 100, p.bulk_order_count), 1) as bulk_order_count_change,
+    ROUND(SAFE_DIVIDE((c.bulk_order_revenue - p.bulk_order_revenue) * 100, p.bulk_order_revenue), 1) as bulk_order_revenue_change,
+    ROUND(SAFE_DIVIDE((c.refunds - p.refunds) * 100, p.refunds), 1) as refunds_change,
+    ROUND(SAFE_DIVIDE((c.refunds * 100 / NULLIF(c.purchase_count, 0) - p.refunds * 100 / NULLIF(p.purchase_count, 0)) * 100,
+        p.refunds * 100 / NULLIF(p.purchase_count, 0)), 1) as refund_rate_change,
+    ROUND(SAFE_DIVIDE((c.product_registrations - p.product_registrations) * 100, p.product_registrations), 1) as product_registrations_change,
+    ROUND(SAFE_DIVIDE((c.business_inquiries - p.business_inquiries) * 100, p.business_inquiries), 1) as business_inquiries_change,
+    ROUND(SAFE_DIVIDE((c.review_writes - p.review_writes) * 100, p.review_writes), 1) as review_writes_change,
+    ROUND(SAFE_DIVIDE((c.inquiry_writes - p.inquiry_writes) * 100, p.inquiry_writes), 1) as inquiry_writes_change
+FROM current_period c
+CROSS JOIN previous_period p
+"""
     
     kpi_df = client.query(kpi_query).to_dataframe()
     
     if not kpi_df.empty:
         kpi = kpi_df.iloc[0]
         
-        # 첫 번째 줄: 주요 지표 4개
-        col1, col2, col3, col4 = st.columns(4)
+        # 📈 트래픽 지표 (6개)
+        st.markdown("### 📈 트래픽 지표")
+        cols = st.columns(6)
         
-        with col1:
-            st.metric(
-                "세션",
-                f"{int(kpi['sessions']):,}",
-                f"{kpi['sessions_change_pct']:+.1f}%" if pd.notna(kpi['sessions_change_pct']) else None,
-                delta_color="normal"
-            )
+        with cols[0]:
+            st.metric("세션", f"{int(kpi['sessions']):,}", f"{kpi['sessions_change']:+.1f}%")
+        with cols[1]:
+            st.metric("페이지뷰", f"{int(kpi['page_views']):,}", f"{kpi['page_views_change']:+.1f}%")
+        with cols[2]:
+            st.metric("활성 사용자", f"{int(kpi['active_users']):,}명", f"{kpi['active_users_change']:+.1f}%")
+        with cols[3]:
+            st.metric("신규 사용자", f"{int(kpi['new_users']):,}명", f"{kpi['new_users_change']:+.1f}%")
+        with cols[4]:
+            st.metric("신규 방문율", f"{kpi['new_visit_rate']:.1f}%", f"{kpi['new_visit_rate_change']:+.1f}%")
+        with cols[5]:
+            st.metric("회원가입", f"{int(kpi['sign_ups']):,}건", f"{kpi['sign_ups_change']:+.1f}%")
         
-        with col2:
-            st.metric(
-                "제품 조회",
-                f"{int(kpi['view_item_count']):,}",
-                f"{kpi['view_item_change_pct']:+.1f}%" if pd.notna(kpi['view_item_change_pct']) else None,
-                delta_color="normal",
-                help="view_item 이벤트 수"
-            )
+        st.markdown("---")
         
-        with col3:
-            st.metric(
-                "장바구니 담기",
-                f"{int(kpi['add_to_cart_count']):,}",
-                f"{kpi['cart_change_pct']:+.1f}%" if pd.notna(kpi['cart_change_pct']) else None,
-                delta_color="normal"
-            )
+        # 💰 구매 지표 (8개) - 2행
+        st.markdown("### 💰 구매 지표")
+        cols = st.columns(4)
         
-        with col4:
-            st.metric(
-                "장바구니 조회",
-                f"{int(kpi['view_cart_count']):,}",
-                f"{kpi['view_cart_change_pct']:+.1f}%" if pd.notna(kpi['view_cart_change_pct']) else None,
-                delta_color="normal"
-            )
+        with cols[0]:
+            st.metric("구매 완료 수", f"{int(kpi['purchasers']):,}명", f"{kpi['purchasers_change']:+.1f}%", help="구매한 고객 수")
+        with cols[1]:
+            st.metric("총 판매 수량", f"{int(kpi['total_quantity']) if pd.notna(kpi['total_quantity']) else 0:,}개", f"{kpi['total_quantity_change']:+.1f}%")
+        with cols[2]:
+            st.metric("총 매출", f"₩{int(kpi['total_revenue']) if pd.notna(kpi['total_revenue']) else 0:,}", f"{kpi['total_revenue_change']:+.1f}%", help="회원할인가 합")
+        with cols[3]:
+            st.metric("구매 전환율", f"{kpi['conversion_rate']:.2f}%", f"{kpi['conversion_rate_change']:+.1f}%")
         
-        # 두 번째 줄: 매출 관련 지표
-        col5, col6, col7, col8, col9, col10 = st.columns(6)
+        cols = st.columns(4)
         
-        with col5:
-            st.metric(
-                "결제 페이지 진입",
-                f"{int(kpi['begin_checkout_count']):,}",
-                f"{kpi['checkout_change_pct']:+.1f}%" if pd.notna(kpi['checkout_change_pct']) else None,
-                delta_color="normal"
-            )
+        with cols[0]:
+            st.metric("평균 주문금액", f"₩{int(kpi['avg_order_value']) if pd.notna(kpi['avg_order_value']) else 0:,}", f"{kpi['avg_order_value_change']:+.1f}%")
+        with cols[1]:
+            st.metric("고가품 평균", f"₩{int(kpi['avg_high_value_order']) if pd.notna(kpi['avg_high_value_order']) else 0:,}", f"{kpi['avg_high_value_order_change']:+.1f}%", help="10만원 초과 제품이 포함된 주문의 평균")
+        with cols[2]:
+            st.metric("환불 수", f"{int(kpi['refunds']):,}건", f"{kpi['refunds_change']:+.1f}%")
+        with cols[3]:
+            st.metric("환불율", f"{kpi['refund_rate']:.2f}%", f"{kpi['refund_rate_change']:+.1f}%")
         
-        with col6:
-            st.metric(
-                "구매 완료",
-                f"{int(kpi['purchasers']):,}",
-                f"{kpi['purchasers_change_pct']:+.1f}%" if pd.notna(kpi['purchasers_change_pct']) else None,
-                delta_color="normal",
-                help="구매한 고객 수"
-            )
+        st.markdown("---")
         
-        with col7:
-            st.metric(
-                "구매전환율",
-                f"{kpi['conversion_rate']:.1f}%",
-                f"{kpi['conversion_change_pp']:+.1f}%p" if pd.notna(kpi['conversion_change_pp']) else None,
-                delta_color="normal"
-            )
+        # 💰💰 대량 구매 (150만원 이상)
+        st.markdown("### 💰💰 대량 구매 (150만원 이상)")
+        cols = st.columns(2)
         
-        with col8:
-            st.metric(
-                "총 매출",
-                f"₩{int(kpi['total_revenue']):,}",
-                f"{kpi['revenue_change_pct']:+.1f}%" if pd.notna(kpi['revenue_change_pct']) else None,
-                delta_color="normal",
-                help="회원할인가 합"
-            )
+        with cols[0]:
+            st.metric("주문 건수", f"{int(kpi['bulk_order_count']):,}건", f"{kpi['bulk_order_count_change']:+.1f}%")
+        with cols[1]:
+            st.metric("총 매출", f"₩{int(kpi['bulk_order_revenue']) if pd.notna(kpi['bulk_order_revenue']) else 0:,}", f"{kpi['bulk_order_revenue_change']:+.1f}%")
         
-        with col9:
-            st.metric(
-                "총 판매수량",
-                f"{int(kpi['total_quantity']) if pd.notna(kpi['total_quantity']) else 0:,}",
-                f"{kpi['quantity_change_pct']:+.1f}%" if pd.notna(kpi['quantity_change_pct']) else None,
-                delta_color="normal"
-            )
+        st.markdown("---")
         
-        with col10:
-            st.metric(
-                "평균 주문금액",
-                f"₩{int(kpi['avg_order_value']) if pd.notna(kpi['avg_order_value']) else 0:,}",
-                f"{kpi['aov_change_pct']:+.1f}%" if pd.notna(kpi['aov_change_pct']) else None,
-                delta_color="normal"
-            )
+        # 🎯 전환 지표 (4개)
+        st.markdown("### 🎯 전환 지표")
+        cols = st.columns(4)
         
-        # 세 번째 줄: 추가 지표 (오른쪽 이미지에 있는 항목들)
-        col11, col12 = st.columns(2)
-        
-        with col11:
-            st.metric(
-                "원본 수",
-                "301",  # 임시값 - 실제 데이터로 교체 필요
-                "-6.2%",
-                delta_color="inverse"
-            )
+        with cols[0]:
+            st.metric("정품등록", f"{int(kpi['product_registrations']):,}건", f"{kpi['product_registrations_change']:+.1f}%")
+        with cols[1]:
+            st.metric("사업자 구매 문의", f"{int(kpi['business_inquiries']):,}건", f"{kpi['business_inquiries_change']:+.1f}%")
+        with cols[2]:
+            st.metric("리뷰 작성 수", f"{int(kpi['review_writes']):,}건", f"{kpi['review_writes_change']:+.1f}%")
+        with cols[3]:
+            st.metric("1:1 문의 작성 수", f"{int(kpi['inquiry_writes']):,}건", f"{kpi['inquiry_writes_change']:+.1f}%")
         
         st.markdown("---")
         
