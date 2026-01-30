@@ -590,6 +590,16 @@ FROM current_period c
 CROSS JOIN previous_period p
 """
     
+    # 쿼리 실행
+    try:
+        st.write("🔍 쿼리 실행 중...")
+        kpi_df = client.query(kpi_query).to_dataframe()
+        st.write(f"✅ 쿼리 완료. 데이터 행 수: {len(kpi_df)}")
+    except Exception as query_error:
+        st.error(f"❌ 쿼리 실행 오류: {str(query_error)}")
+        st.code(kpi_query)
+        raise
+    
     if not kpi_df.empty:
         kpi = kpi_df.iloc[0]
         
