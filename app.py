@@ -1368,154 +1368,23 @@ with st.sidebar:
     
     
     st.markdown("---")
-    st.markdown("### 📌 사용 가이드")
     
-    # 빠른 분석 템플릿
-    st.markdown("#### 🚀 빠른 분석")
+    # 제품 분석
+    st.markdown("### 🪑 제품 분석")
     
-    if st.button("📅 사용자 추이 분석"):
-        # 기간이 설정되지 않았으면 기본값 사용
+    if st.button("📊 제품 분석 시작", type="primary", use_container_width=True):
+        # 기간 설정
         if 'start_date' not in st.session_state:
             from datetime import datetime, timedelta
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=7)
+            end_date = datetime.now() - timedelta(days=1)
+            start_date = end_date - timedelta(days=29)
             st.session_state['start_date'] = start_date.strftime('%Y%m%d')
             st.session_state['end_date'] = end_date.strftime('%Y%m%d')
-            st.session_state['period_label'] = "최근 7일 (기본)"
-        
-        template_query = f"""
-SELECT
-  PARSE_DATE('%Y%m%d', event_date) as date,
-  COUNT(DISTINCT user_pseudo_id) as users,
-  COUNTIF(event_name = 'page_view') as page_views,
-  COUNTIF(event_name = 'purchase') as purchases
-FROM `{table_path}`
-WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
-GROUP BY date
-ORDER BY date DESC
-"""
-        st.session_state['quick_query'] = template_query
-        st.session_state['query_type'] = 'user_trend'
-        st.rerun()
-    
-    if st.button("💰 매출 추이 분석"):
-        # 기간이 설정되지 않았으면 기본값 사용
-        if 'start_date' not in st.session_state:
-            from datetime import datetime, timedelta
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=30)
-            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
-            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
-            st.session_state['period_label'] = "최근 30일 (기본)"
-        
-        template_query = f"""
-SELECT
-  PARSE_DATE('%Y%m%d', event_date) as date,
-  COUNTIF(event_name = 'purchase') as purchases,
-  ROUND(SUM(ecommerce.purchase_revenue), 2) as revenue
-FROM `{table_path}`
-WHERE _TABLE_SUFFIX BETWEEN '{st.session_state['start_date']}' AND '{st.session_state['end_date']}'
-GROUP BY date
-ORDER BY date DESC
-"""
-        st.session_state['quick_query'] = template_query
-        st.session_state['query_type'] = 'revenue_trend'
-        st.rerun()
-    
-    if st.button("🪑 T50 제품 종합 분석"):
-        # 기간이 설정되지 않았으면 기본값 사용
-        if 'start_date' not in st.session_state:
-            from datetime import datetime, timedelta
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=30)
-            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
-            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
-            st.session_state['period_label'] = "최근 30일 (기본)"
+            st.session_state['period_label'] = "최근 30일"
         
         st.session_state['show_product_analysis'] = True
-        st.session_state['product_name'] = 'T50'
+        st.session_state['product_name'] = 'T50'  # 기본값
         st.rerun()
-    
-    # 제품 종합 분석 (자동완성 검색)
-    st.markdown("---")
-    st.markdown("#### 🪑 제품 종합 분석")
-    
-    # 초기 제품 목록 로드 (캐시 활용)
-    @st.cache_data(ttl=3600)
-    def load_all_products(start, end):
-        query = f"""
-SELECT DISTINCT
-  item.item_name as product_name,
-  COUNT(*) as event_count
-FROM `{table_path}`,
-  UNNEST(items) as item
-WHERE _TABLE_SUFFIX BETWEEN '{start}' AND '{end}'
-GROUP BY item.item_name
-ORDER BY event_count DESC
-LIMIT 100
-"""
-        return client.query(query).to_dataframe()
-    
-    # 기간 설정
-    if 'start_date' not in st.session_state:
-        from datetime import datetime, timedelta
-        end_date = datetime.now() - timedelta(days=1)
-        start_date = end_date - timedelta(days=29)
-        temp_start = start_date.strftime('%Y%m%d')
-        temp_end = end_date.strftime('%Y%m%d')
-    else:
-        temp_start = st.session_state['start_date']
-        temp_end = st.session_state['end_date']
-    
-    try:
-        # 전체 제품 목록 로드
-        all_products_df = load_all_products(temp_start, temp_end)
-        
-        if not all_products_df.empty:
-            all_products = all_products_df['product_name'].tolist()
-            
-            # 제품 검색 (자동완성)
-            st.info("💡 제품명을 입력하거나 아래에서 선택하세요. 여러 개 선택 가능합니다.")
-            
-            selected_products_sidebar = st.multiselect(
-                "제품 검색 및 선택",
-                options=all_products,
-                default=[],
-                key="selected_products_sidebar",
-                help="제품명을 입력하면 자동완성됩니다. 여러 제품 선택 가능",
-                placeholder="예: T50, T80, T100 등을 검색하세요"
-            )
-            
-            # 선택된 제품 표시
-            if selected_products_sidebar:
-                st.success(f"✅ 선택된 제품: {len(selected_products_sidebar)}개")
-                with st.expander("선택된 제품 목록 보기"):
-                    for i, product in enumerate(selected_products_sidebar, 1):
-                        st.write(f"{i}. {product}")
-                
-                # 분석 시작 버튼
-                if st.button("📊 제품 종합 분석 시작", key="start_product_analysis", type="primary"):
-                    if 'start_date' not in st.session_state:
-                        from datetime import datetime, timedelta
-                        end_date = datetime.now() - timedelta(days=1)
-                        start_date = end_date - timedelta(days=29)
-                        st.session_state['start_date'] = start_date.strftime('%Y%m%d')
-                        st.session_state['end_date'] = end_date.strftime('%Y%m%d')
-                        st.session_state['period_label'] = "최근 30일"
-                    
-                    st.session_state['show_product_analysis'] = True
-                    st.session_state['product_name'] = selected_products_sidebar[0].split()[0]  # 첫 제품명의 첫 단어
-                    st.session_state['selected_products_list'] = selected_products_sidebar
-                    st.rerun()
-            else:
-                st.warning("제품을 선택하세요.")
-        else:
-            st.warning("제품 데이터를 불러올 수 없습니다.")
-    
-    except Exception as e:
-        st.error(f"제품 로드 오류: {str(e)}")
-        with st.expander("상세 오류"):
-            st.code(str(e))
     
     st.markdown("---")
     st.markdown("#### 💬 질문 예시")
@@ -1539,104 +1408,51 @@ LIMIT 100
 
 # 제품 종합 분석 대시보드
 if 'show_product_analysis' in st.session_state and st.session_state['show_product_analysis']:
-    product_name = st.session_state.get('product_name', 'T50')
-    start_date = st.session_state['start_date']
-    end_date = st.session_state['end_date']
-    period_label = st.session_state.get('period_label', f"{start_date} ~ {end_date}")
+    # 사이드바에서 선택한 제품 가져오기
+    selected_products = st.session_state.get('selected_products_for_analysis', [])
     
-    with st.chat_message("assistant"):
-        st.markdown(f"### 🪑 {product_name} 제품 종합 분석")
-        st.info(f"📅 분석 기간: {period_label}")
+    if not selected_products:
+        st.warning("⚠️ 사이드바에서 제품을 선택하세요.")
+        del st.session_state['show_product_analysis']
+    else:
+        start_date = st.session_state['start_date']
+        end_date = st.session_state['end_date']
+        period_label = st.session_state.get('period_label', f"{start_date} ~ {end_date}")
         
-        with st.spinner("데이터 분석 중..."):
-            try:
-                # 1. 정확한 제품명 목록 추출
-                product_query = f"""
-SELECT DISTINCT
-  item.item_name as product_name,
-  COUNT(*) as event_count
-FROM `{table_path}`,
-  UNNEST(items) as item
-WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
-  AND item.item_name LIKE '%{product_name}%'
-GROUP BY item.item_name
-ORDER BY event_count DESC
-LIMIT 10
-"""
-                product_df = client.query(product_query).to_dataframe()
-                
-                if product_df.empty:
-                    st.warning(f"⚠️ '{product_name}' 관련 제품을 찾을 수 없습니다.")
-                else:
-                    # 제품 선택 UI 개선
-                    st.markdown("#### 📦 제품 선택")
-                    
-                    # 분석 모드 선택
-                    analysis_mode = st.radio(
-                        "분석 모드",
-                        ["📊 통합 분석", "⚖️ 제품 비교"],
-                        horizontal=True,
-                        help="통합 분석: 선택한 제품들의 합계 / 제품 비교: 제품별로 나란히 비교"
-                    )
-                    
-                    # 제품 검색 및 선택
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        search_keyword = st.text_input(
-                            "제품 검색",
-                            placeholder="예: HLDA, 풀옵션, 헤드레스트",
-                            key="product_search"
-                        )
-                    
-                    # 검색 필터링
-                    if search_keyword:
-                        filtered_products = product_df[
-                            product_df['product_name'].str.contains(search_keyword, case=False, na=False)
-                        ]['product_name'].tolist()
-                    else:
-                        filtered_products = product_df['product_name'].tolist()
-                    
-                    if not filtered_products:
-                        st.warning(f"'{search_keyword}' 검색 결과가 없습니다.")
-                        filtered_products = product_df['product_name'].tolist()
-                    
-                    # 제품 다중 선택
-                    if analysis_mode == "⚖️ 제품 비교":
-                        st.info("💡 비교할 제품 2~4개를 선택하세요. 각 제품의 분석 결과가 나란히 표시됩니다.")
-                        default_selection = filtered_products[:2] if len(filtered_products) >= 2 else filtered_products
-                    else:
-                        default_selection = filtered_products[:3]
-                    
-                    selected_products = st.multiselect(
-                        "분석할 제품 선택",
-                        filtered_products,
-                        default=default_selection,
-                        key="selected_products_main"
-                    )
-                    
-                    if not selected_products:
-                        st.warning("⚠️ 최소 1개 이상의 제품을 선택하세요.")
-                        st.stop()
-                    
-                    # 비교 모드 유효성 검사
-                    if analysis_mode == "⚖️ 제품 비교":
-                        if len(selected_products) < 2:
-                            st.warning("⚠️ 비교 모드는 최소 2개 제품이 필요합니다.")
-                            st.stop()
-                        if len(selected_products) > 4:
-                            st.warning("⚠️ 비교 모드는 최대 4개 제품까지 선택 가능합니다.")
-                            st.stop()
-                    
-                    st.markdown("---")
-                    
-                    # 선택된 제품 표시 (더 명확하게)
-                    st.success(f"✅ **분석 대상 제품: {len(selected_products)}개**")
-                    with st.expander("📦 선택된 제품 목록"):
-                        for i, prod in enumerate(selected_products, 1):
-                            st.write(f"{i}. {prod}")
-                    
-                    st.info(f"📊 분석 모드: **{analysis_mode}**")
-                    
+        with st.chat_message("assistant"):
+            st.markdown(f"### 🪑 제품 종합 분석")
+            st.info(f"📅 분석 기간: {period_label}")
+            
+            # 선택된 제품 표시 (수정 불가, 읽기 전용)
+            st.success(f"✅ **분석 대상 제품: {len(selected_products)}개**")
+            with st.expander("📦 선택된 제품 목록"):
+                for i, prod in enumerate(selected_products, 1):
+                    st.write(f"{i}. {prod}")
+            
+            st.info("💡 제품을 변경하려면 사이드바에서 다시 선택하세요")
+            
+            # 분석 모드 선택
+            analysis_mode = st.radio(
+                "분석 모드",
+                ["📊 통합 분석", "⚖️ 제품 비교"],
+                horizontal=True,
+                help="통합 분석: 선택한 제품들의 합계 / 제품 비교: 제품별로 나란히 비교",
+                key="analysis_mode_selector"
+            )
+            
+            # 비교 모드 유효성 검사
+            if analysis_mode == "⚖️ 제품 비교":
+                if len(selected_products) < 2:
+                    st.warning("⚠️ 비교 모드는 최소 2개 제품이 필요합니다.")
+                    st.stop()
+                if len(selected_products) > 4:
+                    st.warning("⚠️ 비교 모드는 최대 4개 제품까지 선택 가능합니다.")
+                    st.stop()
+            
+            st.markdown("---")
+            
+            with st.spinner("데이터 분석 중..."):
+                try:
                     # 분석 모드에 따라 분기
                     if analysis_mode == "📊 통합 분석":
                         # 기존 통합 분석 로직
@@ -2326,12 +2142,12 @@ FROM product_events
                         
                         else:
                             st.warning("비교 데이터가 없습니다.")
-                        
-            except Exception as e:
-                st.error(f"❌ 분석 오류: {str(e)}")
-                import traceback
-                with st.expander("상세 오류"):
-                    st.code(traceback.format_exc())
+                
+                except Exception as e:
+                    st.error(f"❌ 분석 오류: {str(e)}")
+                    import traceback
+                    with st.expander("상세 오류"):
+                        st.code(traceback.format_exc())
         
         # 분석 완료 후 플래그 제거
         del st.session_state['show_product_analysis']
