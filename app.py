@@ -1436,75 +1436,86 @@ ORDER BY date DESC
         st.session_state['product_name'] = 'T50'
         st.rerun()
     
-    # 제품 종합 분석 (드롭다운 선택)
+    # 제품 종합 분석 (자동완성 검색)
     st.markdown("---")
     st.markdown("#### 🪑 제품 종합 분석")
     
-    # 제품명 입력으로 검색
-    search_product = st.text_input(
-        "제품 검색",
-        value="T50",
-        key="product_search_sidebar",
-        help="예: T50, T80, T100"
-    )
-    
-    if search_product:
-        # 제품 검색 쿼리
-        try:
-            if 'start_date' not in st.session_state:
-                from datetime import datetime, timedelta
-                end_date = datetime.now() - timedelta(days=1)
-                start_date = end_date - timedelta(days=29)
-                temp_start = start_date.strftime('%Y%m%d')
-                temp_end = end_date.strftime('%Y%m%d')
-            else:
-                temp_start = st.session_state['start_date']
-                temp_end = st.session_state['end_date']
-            
-            product_search_query = f"""
+    # 초기 제품 목록 로드 (캐시 활용)
+    @st.cache_data(ttl=3600)
+    def load_all_products(start, end):
+        query = f"""
 SELECT DISTINCT
   item.item_name as product_name,
   COUNT(*) as event_count
 FROM `{table_path}`,
   UNNEST(items) as item
-WHERE _TABLE_SUFFIX BETWEEN '{temp_start}' AND '{temp_end}'
-  AND item.item_name LIKE '%{search_product}%'
+WHERE _TABLE_SUFFIX BETWEEN '{start}' AND '{end}'
 GROUP BY item.item_name
 ORDER BY event_count DESC
-LIMIT 20
+LIMIT 100
 """
-            search_df = client.query(product_search_query).to_dataframe()
+        return client.query(query).to_dataframe()
+    
+    # 기간 설정
+    if 'start_date' not in st.session_state:
+        from datetime import datetime, timedelta
+        end_date = datetime.now() - timedelta(days=1)
+        start_date = end_date - timedelta(days=29)
+        temp_start = start_date.strftime('%Y%m%d')
+        temp_end = end_date.strftime('%Y%m%d')
+    else:
+        temp_start = st.session_state['start_date']
+        temp_end = st.session_state['end_date']
+    
+    try:
+        # 전체 제품 목록 로드
+        all_products_df = load_all_products(temp_start, temp_end)
+        
+        if not all_products_df.empty:
+            all_products = all_products_df['product_name'].tolist()
             
-            if not search_df.empty:
-                # 중복 선택 가능한 제품 리스트
-                selected_products_sidebar = st.multiselect(
-                    "분석할 제품 선택 (여러 개 가능)",
-                    search_df['product_name'].tolist(),
-                    default=[],
-                    key="selected_products_sidebar",
-                    help="분석할 제품을 선택하세요. 여러 개 선택 가능합니다."
-                )
+            # 제품 검색 (자동완성)
+            st.info("💡 제품명을 입력하거나 아래에서 선택하세요. 여러 개 선택 가능합니다.")
+            
+            selected_products_sidebar = st.multiselect(
+                "제품 검색 및 선택",
+                options=all_products,
+                default=[],
+                key="selected_products_sidebar",
+                help="제품명을 입력하면 자동완성됩니다. 여러 제품 선택 가능",
+                placeholder="예: T50, T80, T100 등을 검색하세요"
+            )
+            
+            # 선택된 제품 표시
+            if selected_products_sidebar:
+                st.success(f"✅ 선택된 제품: {len(selected_products_sidebar)}개")
+                with st.expander("선택된 제품 목록 보기"):
+                    for i, product in enumerate(selected_products_sidebar, 1):
+                        st.write(f"{i}. {product}")
                 
-                if st.button("📊 제품 종합 분석 시작", key="start_product_analysis"):
-                    if selected_products_sidebar:
-                        if 'start_date' not in st.session_state:
-                            from datetime import datetime, timedelta
-                            end_date = datetime.now() - timedelta(days=1)
-                            start_date = end_date - timedelta(days=29)
-                            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
-                            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
-                            st.session_state['period_label'] = "최근 30일"
-                        
-                        st.session_state['show_product_analysis'] = True
-                        st.session_state['product_name'] = search_product  # 검색어
-                        st.session_state['selected_products_list'] = selected_products_sidebar  # 선택된 제품들
-                        st.rerun()
-                    else:
-                        st.warning("최소 1개 제품을 선택하세요.")
+                # 분석 시작 버튼
+                if st.button("📊 제품 종합 분석 시작", key="start_product_analysis", type="primary"):
+                    if 'start_date' not in st.session_state:
+                        from datetime import datetime, timedelta
+                        end_date = datetime.now() - timedelta(days=1)
+                        start_date = end_date - timedelta(days=29)
+                        st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+                        st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+                        st.session_state['period_label'] = "최근 30일"
+                    
+                    st.session_state['show_product_analysis'] = True
+                    st.session_state['product_name'] = selected_products_sidebar[0].split()[0]  # 첫 제품명의 첫 단어
+                    st.session_state['selected_products_list'] = selected_products_sidebar
+                    st.rerun()
             else:
-                st.warning(f"'{search_product}' 제품을 찾을 수 없습니다.")
-        except Exception as e:
-            st.error(f"검색 오류: {str(e)}")
+                st.warning("제품을 선택하세요.")
+        else:
+            st.warning("제품 데이터를 불러올 수 없습니다.")
+    
+    except Exception as e:
+        st.error(f"제품 로드 오류: {str(e)}")
+        with st.expander("상세 오류"):
+            st.code(str(e))
     
     st.markdown("---")
     st.markdown("#### 💬 질문 예시")
@@ -1618,13 +1629,22 @@ LIMIT 10
                     
                     st.markdown("---")
                     
-                    # 선택된 제품 표시
-                    st.info(f"📦 선택된 제품: {', '.join(selected_products)}")
+                    # 선택된 제품 표시 (더 명확하게)
+                    st.success(f"✅ **분석 대상 제품: {len(selected_products)}개**")
+                    with st.expander("📦 선택된 제품 목록"):
+                        for i, prod in enumerate(selected_products, 1):
+                            st.write(f"{i}. {prod}")
+                    
+                    st.info(f"📊 분석 모드: **{analysis_mode}**")
                     
                     # 분석 모드에 따라 분기
                     if analysis_mode == "📊 통합 분석":
                         # 기존 통합 분석 로직
                         product_condition = " OR ".join([f"item.item_name = '{p}'" for p in selected_products])
+                        
+                        # 디버깅: SQL 조건 표시
+                        with st.expander("🔍 SQL 필터 조건"):
+                            st.code(product_condition)
                         
                         # 2. 종합 분석 쿼리
                         analysis_query = f"""
@@ -1744,15 +1764,19 @@ FROM product_events
                             with tab1:
                                 st.markdown("#### 👥 인구통계학적 정보")
                                 
-                                # 인구통계 데이터 쿼리
+                                # 인구통계 데이터 쿼리 (user_properties 및 event_params 모두 확인)
                                 demo_query = f"""
 WITH product_users AS (
   SELECT DISTINCT
-    user_pseudo_id,
-    device.category as device_category,
-    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'gender') as gender,
-    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'age') as age
-  FROM `{table_path}`,
+    t.user_pseudo_id,
+    t.device.category as device_category,
+    -- user_properties에서 성별/연령 시도
+    (SELECT value.string_value FROM UNNEST(t.user_properties) WHERE key = 'gender') as gender_from_props,
+    (SELECT value.string_value FROM UNNEST(t.user_properties) WHERE key = 'age') as age_from_props,
+    -- event_params에서 성별/연령 시도
+    (SELECT value.string_value FROM UNNEST(t.event_params) WHERE key = 'gender') as gender_from_params,
+    (SELECT value.string_value FROM UNNEST(t.event_params) WHERE key = 'age') as age_from_params
+  FROM `{table_path}` t,
     UNNEST(items) as item
   WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
     AND ({product_condition})
@@ -1762,14 +1786,16 @@ SELECT
   COUNTIF(device_category = 'mobile') as mobile_users,
   COUNTIF(device_category = 'desktop') as desktop_users,
   COUNTIF(device_category = 'tablet') as tablet_users,
-  COUNTIF(gender = 'male') as male_users,
-  COUNTIF(gender = 'female') as female_users,
-  COUNTIF(age = '18-24') as age_18_24,
-  COUNTIF(age = '25-34') as age_25_34,
-  COUNTIF(age = '35-44') as age_35_44,
-  COUNTIF(age = '45-54') as age_45_54,
-  COUNTIF(age = '55-64') as age_55_64,
-  COUNTIF(age = '65+') as age_65_plus
+  -- 성별 (user_properties 우선, 없으면 event_params)
+  COUNTIF(COALESCE(gender_from_props, gender_from_params) = 'male') as male_users,
+  COUNTIF(COALESCE(gender_from_props, gender_from_params) = 'female') as female_users,
+  -- 연령대 (user_properties 우선, 없으면 event_params)
+  COUNTIF(COALESCE(age_from_props, age_from_params) = '18-24') as age_18_24,
+  COUNTIF(COALESCE(age_from_props, age_from_params) = '25-34') as age_25_34,
+  COUNTIF(COALESCE(age_from_props, age_from_params) = '35-44') as age_35_44,
+  COUNTIF(COALESCE(age_from_props, age_from_params) = '45-54') as age_45_54,
+  COUNTIF(COALESCE(age_from_props, age_from_params) = '55-64') as age_55_64,
+  COUNTIF(COALESCE(age_from_props, age_from_params) = '65+') as age_65_plus
 FROM product_users
 """
                                 demo_df = client.query(demo_query).to_dataframe()
@@ -1800,23 +1826,32 @@ FROM product_users
                                     
                                     # 성별 분포
                                     with col2:
-                                        gender_data = {
-                                            '성별': ['남성', '여성'],
-                                            '사용자수': [
-                                                int(demo_row['male_users']),
-                                                int(demo_row['female_users'])
-                                            ]
-                                        }
-                                        gender_df = pd.DataFrame(gender_data)
-                                        gender_df = gender_df[gender_df['사용자수'] > 0]
+                                        gender_total = int(demo_row['male_users']) + int(demo_row['female_users'])
                                         
-                                        if not gender_df.empty:
+                                        if gender_total > 0:
+                                            gender_data = {
+                                                '성별': ['남성', '여성'],
+                                                '사용자수': [
+                                                    int(demo_row['male_users']),
+                                                    int(demo_row['female_users'])
+                                                ]
+                                            }
+                                            gender_df = pd.DataFrame(gender_data)
+                                            gender_df = gender_df[gender_df['사용자수'] > 0]
+                                            
                                             fig_gender = px.pie(gender_df, names='성별', values='사용자수', 
                                                                title='성별 분포',
                                                                color_discrete_sequence=['#AB63FA', '#FFA15A'])
                                             st.plotly_chart(fig_gender, use_container_width=True)
                                         else:
                                             st.info("성별 데이터가 없습니다.")
+                                            with st.expander("💡 데이터가 없는 이유"):
+                                                st.write("""
+GA4에서 성별 데이터가 수집되지 않았을 수 있습니다.
+- GA4 설정에서 사용자 속성 수집 확인 필요
+- Google Signals 데이터 수집 활성화 필요
+- 개인정보 보호 정책으로 수집 제한됨
+                                                """)
                                     
                                     # 연령대 분포
                                     with col3:
@@ -1833,8 +1868,9 @@ FROM product_users
                                         }
                                         age_df = pd.DataFrame(age_data)
                                         age_df = age_df[age_df['사용자수'] > 0]
+                                        age_total = age_df['사용자수'].sum()
                                         
-                                        if not age_df.empty:
+                                        if age_total > 0:
                                             fig_age = px.bar(age_df, x='연령대', y='사용자수', 
                                                             title='연령대별 분포',
                                                             color='사용자수',
@@ -1842,6 +1878,13 @@ FROM product_users
                                             st.plotly_chart(fig_age, use_container_width=True)
                                         else:
                                             st.info("연령대 데이터가 없습니다.")
+                                            with st.expander("💡 데이터가 없는 이유"):
+                                                st.write("""
+GA4에서 연령대 데이터가 수집되지 않았을 수 있습니다.
+- GA4 설정에서 사용자 속성 수집 확인 필요
+- Google Signals 데이터 수집 활성화 필요
+- 개인정보 보호 정책으로 수집 제한됨
+                                                """)
                                     
                                     # 인구통계 요약
                                     st.markdown("---")
