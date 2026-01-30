@@ -427,23 +427,96 @@ def get_naver_keyword_stats(keywords):
 # 3. UI 구성
 st.title("🪑 SIDIZ AI Intelligence Dashboard")
 
+# ========================================
+# 사이드바 - 기간 선택 (KPI 쿼리보다 먼저 실행)
+# ========================================
+with st.sidebar:
+    st.markdown("### 📅 기간 선택")
+    
+    # 날짜 범위 선택
+    date_option = st.radio(
+        "분석 기간",
+        ["빠른 선택", "직접 선택"],
+        horizontal=True,
+        index=0
+    )
+    
+    if date_option == "빠른 선택":
+        quick_period = st.selectbox(
+            "기간",
+            ["최근 7일", "최근 14일", "최근 30일", "최근 90일"],
+            index=0
+        )
+        
+        period_map = {
+            "최근 7일": 7,
+            "최근 14일": 14,
+            "최근 30일": 30,
+            "최근 90일": 90
+        }
+        days = period_map[quick_period]
+        
+        from datetime import datetime, timedelta
+        end_date = datetime.now() - timedelta(days=1)
+        start_date = end_date - timedelta(days=days - 1)
+        
+        st.info(f"📆 {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
+        
+        st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+        st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+        st.session_state['period_label'] = quick_period
+        
+    else:
+        from datetime import datetime, timedelta, date
+        min_date = date(2025, 9, 1)
+        yesterday = datetime.now() - timedelta(days=1)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input(
+                "시작일",
+                value=max(yesterday - timedelta(days=6), min_date),
+                min_value=min_date,
+                max_value=yesterday
+            )
+        with col2:
+            end_date = st.date_input(
+                "종료일",
+                value=yesterday,
+                min_value=min_date,
+                max_value=yesterday
+            )
+        
+        if start_date and end_date:
+            days_diff = (end_date - start_date).days + 1
+            st.success(f"✅ 선택된 기간: **{days_diff}일**")
+            
+            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+            st.session_state['period_label'] = f"{start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
+# ========================================
+
 # 핵심 KPI 대시보드 (상단 고정) - 18개 지표
 st.markdown("## 📊 KPI Overview")
 
 # 전체 기간 KPI 조회
 try:
-    # 기본 기간 설정 (종료일 = 어제, 시작일 = 2025-09-01 이후)
+    # 기본 기간 설정 (최초 실행 시에만)
     if 'start_date' not in st.session_state:
         from datetime import datetime, timedelta, date
         min_date = date(2025, 9, 1)  # 데이터 시작일
         end_date = datetime.now() - timedelta(days=1)  # 어제
-        start_date = max(end_date - timedelta(days=6), datetime.combine(min_date, datetime.min.time()))  # 최근 7일 또는 2025-09-01
+        start_date = max(end_date - timedelta(days=6), datetime.combine(min_date, datetime.min.time()))  # 최근 7일
         st.session_state['start_date'] = start_date.strftime('%Y%m%d')
         st.session_state['end_date'] = end_date.strftime('%Y%m%d')
         st.session_state['period_label'] = "최근 7일"
     
+    # 사이드바에서 설정한 날짜 사용
     current_start = st.session_state.get('start_date', '20250901')
     current_end = st.session_state.get('end_date', '20260128')
+    
+    # 🔍 디버깅: 실제 사용 날짜 표시
+    st.warning(f"🔍 DEBUG - 쿼리 날짜: {current_start} ~ {current_end}")
     
     # 전기 기간 계산 (동일 일수만큼 이전)
     from datetime import datetime, timedelta
