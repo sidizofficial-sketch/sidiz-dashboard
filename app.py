@@ -1436,6 +1436,30 @@ ORDER BY date DESC
         st.session_state['product_name'] = 'T50'
         st.rerun()
     
+    # 페이지 탐색 퍼널 분석
+    st.markdown("---")
+    st.markdown("#### 🔍 페이지 탐색 분석")
+    
+    product_for_funnel = st.text_input(
+        "제품명 입력",
+        value="T50",
+        key="funnel_product",
+        help="예: T50, T80, T100"
+    )
+    
+    if st.button("📊 이 제품 방문자가 함께 본 페이지 TOP10"):
+        if 'start_date' not in st.session_state:
+            from datetime import datetime, timedelta
+            end_date = datetime.now() - timedelta(days=1)
+            start_date = end_date - timedelta(days=6)
+            st.session_state['start_date'] = start_date.strftime('%Y%m%d')
+            st.session_state['end_date'] = end_date.strftime('%Y%m%d')
+            st.session_state['period_label'] = "최근 7일"
+        
+        st.session_state['page_funnel_product'] = product_for_funnel
+        st.session_state['show_page_funnel'] = True
+        st.rerun()
+    
     st.markdown("---")
     st.markdown("#### 💬 질문 예시")
     st.markdown("""
@@ -1455,6 +1479,107 @@ ORDER BY date DESC
         if 'show_product_analysis' in st.session_state:
             del st.session_state['show_product_analysis']
         st.rerun()
+
+# 페이지 탐색 퍼널 분석
+if 'show_page_funnel' in st.session_state and st.session_state['show_page_funnel']:
+    product_name = st.session_state.get('page_funnel_product', 'T50')
+    start_date = st.session_state['start_date']
+    end_date = st.session_state['end_date']
+    period_label = st.session_state.get('period_label', f"{start_date} ~ {end_date}")
+    
+    with st.chat_message("assistant"):
+        st.markdown(f"### 🔍 {product_name} 페이지 방문자 탐색 분석")
+        st.info(f"📅 분석 기간: {period_label}")
+        
+        with st.spinner(f"{product_name} 방문자 데이터 분석 중..."):
+            try:
+                # 2단계 분석
+                # 1단계: 제품 페이지 방문자 추출
+                visitors_query = f"""
+                CREATE TEMP TABLE product_visitors AS
+                SELECT DISTINCT user_pseudo_id
+                FROM `{table_path}`
+                WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+                  AND event_name = 'page_view'
+                  AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%/products/{product_name.lower()}%'
+                """
+                
+                # 2단계: 해당 방문자들이 본 다른 페이지
+                funnel_query = f"""
+                WITH product_visitors AS (
+                  SELECT DISTINCT user_pseudo_id
+                  FROM `{table_path}`
+                  WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+                    AND event_name = 'page_view'
+                    AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') LIKE '%/products/{product_name.lower()}%'
+                )
+                SELECT 
+                  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') as page_url,
+                  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_title') as page_title,
+                  COUNT(DISTINCT t.user_pseudo_id) as visitors,
+                  COUNT(*) as page_views
+                FROM `{table_path}` t
+                WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+                  AND event_name = 'page_view'
+                  AND user_pseudo_id IN (SELECT user_pseudo_id FROM product_visitors)
+                  AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_location') NOT LIKE '%/products/{product_name.lower()}%'
+                  AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'page_title') IS NOT NULL
+                GROUP BY page_url, page_title
+                HAVING visitors > 1
+                ORDER BY visitors DESC
+                LIMIT 10
+                """
+                
+                funnel_df = client.query(funnel_query).to_dataframe()
+                
+                if not funnel_df.empty:
+                    st.markdown("#### 📊 함께 방문한 페이지 TOP10")
+                    
+                    # 시각화
+                    import plotly.express as px
+                    fig = px.bar(
+                        funnel_df,
+                        x='visitors',
+                        y='page_title',
+                        orientation='h',
+                        title=f'{product_name} 방문자가 함께 본 페이지',
+                        labels={'visitors': '방문자 수', 'page_title': '페이지'},
+                        text='visitors'
+                    )
+                    fig.update_traces(texttemplate='%{text:,}', textposition='outside')
+                    fig.update_layout(height=500, yaxis={'categoryorder':'total ascending'})
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 상세 데이터
+                    st.markdown("#### 📋 상세 데이터")
+                    display_df = funnel_df.copy()
+                    display_df.columns = ['페이지 URL', '페이지 제목', '방문자 수', '페이지뷰']
+                    st.dataframe(display_df, use_container_width=True)
+                    
+                    # 인사이트
+                    st.markdown("#### 💡 인사이트")
+                    top_page = funnel_df.iloc[0]
+                    st.success(f"""
+**주요 발견사항:**
+- {product_name} 방문자의 {int(top_page['visitors'])}명이 "{top_page['page_title']}" 페이지도 방문했습니다
+- 총 {len(funnel_df)}개의 주요 이동 경로를 발견했습니다
+- 평균 페이지뷰: {funnel_df['page_views'].mean():.1f}회
+
+**추천:**
+- "{top_page['page_title']}" 페이지와 {product_name}의 크로스 프로모션 고려
+- 자주 함께 보는 페이지들 간 연관 콘텐츠 강화
+                    """)
+                    
+                else:
+                    st.warning(f"⚠️ {product_name} 페이지 방문자의 추가 탐색 데이터가 없습니다.")
+                
+            except Exception as e:
+                st.error(f"❌ 분석 오류: {str(e)}")
+                with st.expander("상세 오류"):
+                    st.code(str(e))
+        
+        # 분석 완료 후 플래그 제거
+        del st.session_state['show_page_funnel']
 
 # 제품 종합 분석 대시보드
 if 'show_product_analysis' in st.session_state and st.session_state['show_product_analysis']:
@@ -1487,17 +1612,73 @@ LIMIT 10
                 if product_df.empty:
                     st.warning(f"⚠️ '{product_name}' 관련 제품을 찾을 수 없습니다.")
                 else:
-                    # 제품 선택
-                    st.markdown("#### 📦 검색된 제품")
+                    # 제품 선택 UI 개선
+                    st.markdown("#### 📦 제품 선택")
+                    
+                    # 분석 모드 선택
+                    analysis_mode = st.radio(
+                        "분석 모드",
+                        ["📊 통합 분석", "⚖️ 제품 비교"],
+                        horizontal=True,
+                        help="통합 분석: 선택한 제품들의 합계 / 제품 비교: 제품별로 나란히 비교"
+                    )
+                    
+                    # 제품 검색 및 선택
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        search_keyword = st.text_input(
+                            "제품 검색",
+                            placeholder="예: HLDA, 풀옵션, 헤드레스트",
+                            key="product_search"
+                        )
+                    
+                    # 검색 필터링
+                    if search_keyword:
+                        filtered_products = product_df[
+                            product_df['product_name'].str.contains(search_keyword, case=False, na=False)
+                        ]['product_name'].tolist()
+                    else:
+                        filtered_products = product_df['product_name'].tolist()
+                    
+                    if not filtered_products:
+                        st.warning(f"'{search_keyword}' 검색 결과가 없습니다.")
+                        filtered_products = product_df['product_name'].tolist()
+                    
+                    # 제품 다중 선택
+                    if analysis_mode == "⚖️ 제품 비교":
+                        st.info("💡 비교할 제품 2~4개를 선택하세요. 각 제품의 분석 결과가 나란히 표시됩니다.")
+                        default_selection = filtered_products[:2] if len(filtered_products) >= 2 else filtered_products
+                    else:
+                        default_selection = filtered_products[:3]
+                    
                     selected_products = st.multiselect(
                         "분석할 제품 선택",
-                        product_df['product_name'].tolist(),
-                        default=product_df['product_name'].tolist()[:3]
+                        filtered_products,
+                        default=default_selection,
+                        key="selected_products_main"
                     )
                     
                     if not selected_products:
-                        st.warning("최소 1개 이상의 제품을 선택하세요.")
-                    else:
+                        st.warning("⚠️ 최소 1개 이상의 제품을 선택하세요.")
+                        st.stop()
+                    
+                    # 비교 모드 유효성 검사
+                    if analysis_mode == "⚖️ 제품 비교":
+                        if len(selected_products) < 2:
+                            st.warning("⚠️ 비교 모드는 최소 2개 제품이 필요합니다.")
+                            st.stop()
+                        if len(selected_products) > 4:
+                            st.warning("⚠️ 비교 모드는 최대 4개 제품까지 선택 가능합니다.")
+                            st.stop()
+                    
+                    st.markdown("---")
+                    
+                    # 선택된 제품 표시
+                    st.info(f"📦 선택된 제품: {', '.join(selected_products)}")
+                    
+                    # 분석 모드에 따라 분기
+                    if analysis_mode == "📊 통합 분석":
+                        # 기존 통합 분석 로직
                         product_condition = " OR ".join([f"item.item_name = '{p}'" for p in selected_products])
                         
                         # 2. 종합 분석 쿼리
@@ -1769,6 +1950,172 @@ WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
                         
                         else:
                             st.warning("분석 데이터가 없습니다.")
+                    
+                    else:  # 비교 모드
+                        st.markdown("### ⚖️ 제품 비교 분석")
+                        
+                        # 각 제품별로 개별 분석
+                        comparison_data = []
+                        
+                        for product in selected_products:
+                            # 개별 제품 분석 쿼리
+                            product_analysis_query = f"""
+WITH product_events AS (
+  SELECT
+    user_pseudo_id,
+    event_name,
+    ecommerce.purchase_revenue as revenue,
+    item.quantity,
+    device.category as device_category
+  FROM `{table_path}`,
+    UNNEST(items) as item
+  WHERE _TABLE_SUFFIX BETWEEN '{start_date}' AND '{end_date}'
+    AND item.item_name = '{product}'
+)
+SELECT
+  '{product}' as product_name,
+  COUNT(DISTINCT user_pseudo_id) as total_visitors,
+  COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) as total_buyers,
+  COUNTIF(event_name = 'purchase') as total_purchases,
+  SUM(CASE WHEN event_name = 'purchase' THEN revenue END) as total_revenue,
+  AVG(CASE WHEN event_name = 'purchase' THEN revenue END) as avg_order_value,
+  SUM(CASE WHEN event_name = 'purchase' THEN quantity END) as total_quantity,
+  ROUND(COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN user_pseudo_id END) * 100.0 / NULLIF(COUNT(DISTINCT user_pseudo_id), 0), 2) as conversion_rate,
+  COUNTIF(device_category = 'mobile') as mobile_users,
+  COUNTIF(device_category = 'desktop') as desktop_users
+FROM product_events
+"""
+                            df = client.query(product_analysis_query).to_dataframe()
+                            if not df.empty:
+                                comparison_data.append(df.iloc[0])
+                        
+                        if comparison_data:
+                            import pandas as pd
+                            comparison_df = pd.DataFrame(comparison_data)
+                            
+                            # 비교 대시보드 - 나란히 표시
+                            st.markdown("#### 📊 핵심 지표 비교")
+                            
+                            # 각 제품을 컬럼으로 표시
+                            cols = st.columns(len(selected_products))
+                            
+                            for idx, (col, product) in enumerate(zip(cols, selected_products)):
+                                with col:
+                                    data = comparison_df.iloc[idx]
+                                    st.markdown(f"### {product}")
+                                    
+                                    st.metric("방문자", f"{int(data['total_visitors']):,}명")
+                                    st.metric("구매자", f"{int(data['total_buyers']):,}명")
+                                    st.metric("전환율", f"{data['conversion_rate']:.1f}%")
+                                    st.metric("총 매출", f"₩{int(data['total_revenue']) if pd.notna(data['total_revenue']) else 0:,}")
+                                    st.metric("평균 주문액", f"₩{int(data['avg_order_value']) if pd.notna(data['avg_order_value']) else 0:,}")
+                                    st.metric("총 판매량", f"{int(data['total_quantity']) if pd.notna(data['total_quantity']) else 0:,}개")
+                            
+                            # 비교 차트
+                            st.markdown("---")
+                            st.markdown("#### 📈 비교 차트")
+                            
+                            # 방문자 vs 구매자
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                fig1 = go.Figure()
+                                fig1.add_trace(go.Bar(
+                                    name='방문자',
+                                    x=comparison_df['product_name'],
+                                    y=comparison_df['total_visitors'],
+                                    text=comparison_df['total_visitors'],
+                                    textposition='outside'
+                                ))
+                                fig1.add_trace(go.Bar(
+                                    name='구매자',
+                                    x=comparison_df['product_name'],
+                                    y=comparison_df['total_buyers'],
+                                    text=comparison_df['total_buyers'],
+                                    textposition='outside'
+                                ))
+                                fig1.update_layout(
+                                    title='방문자 vs 구매자',
+                                    barmode='group',
+                                    height=400
+                                )
+                                st.plotly_chart(fig1, use_container_width=True)
+                            
+                            with col2:
+                                fig2 = go.Figure()
+                                fig2.add_trace(go.Bar(
+                                    x=comparison_df['product_name'],
+                                    y=comparison_df['conversion_rate'],
+                                    text=comparison_df['conversion_rate'].apply(lambda x: f"{x:.1f}%"),
+                                    textposition='outside',
+                                    marker_color='lightblue'
+                                ))
+                                fig2.update_layout(
+                                    title='전환율 비교',
+                                    yaxis_title='전환율 (%)',
+                                    height=400
+                                )
+                                st.plotly_chart(fig2, use_container_width=True)
+                            
+                            # 매출 비교
+                            fig3 = go.Figure()
+                            fig3.add_trace(go.Bar(
+                                x=comparison_df['product_name'],
+                                y=comparison_df['total_revenue'],
+                                text=comparison_df['total_revenue'].apply(lambda x: f"₩{int(x):,}" if pd.notna(x) else "₩0"),
+                                textposition='outside',
+                                marker_color='lightgreen'
+                            ))
+                            fig3.update_layout(
+                                title='총 매출 비교',
+                                yaxis_title='매출 (원)',
+                                height=400
+                            )
+                            st.plotly_chart(fig3, use_container_width=True)
+                            
+                            # AI 인사이트 생성
+                            st.markdown("---")
+                            st.markdown("### 💡 AI 비교 인사이트")
+                            
+                            # 최고/최저 찾기
+                            best_conversion = comparison_df.loc[comparison_df['conversion_rate'].idxmax()]
+                            best_revenue = comparison_df.loc[comparison_df['total_revenue'].idxmax()]
+                            best_visitors = comparison_df.loc[comparison_df['total_visitors'].idxmax()]
+                            
+                            insights_comparison = f"""
+**핵심 발견사항:**
+
+1. **전환율 최고**: {best_conversion['product_name']} ({best_conversion['conversion_rate']:.1f}%)
+   - 다른 제품 대비 효율적인 전환 구조
+
+2. **매출 최고**: {best_revenue['product_name']} (₩{int(best_revenue['total_revenue']):,})
+   - 전체 매출의 {int(best_revenue['total_revenue'] / comparison_df['total_revenue'].sum() * 100)}% 차지
+
+3. **방문자 최다**: {best_visitors['product_name']} ({int(best_visitors['total_visitors']):,}명)
+   - 가장 높은 관심도
+
+**전략적 제안:**
+"""
+                            
+                            # 각 제품별 개선 포인트
+                            for _, row in comparison_df.iterrows():
+                                if row['conversion_rate'] < comparison_df['conversion_rate'].mean():
+                                    insights_comparison += f"\n- **{row['product_name']}**: 전환율 개선 필요 (현재 {row['conversion_rate']:.1f}% → 목표 {comparison_df['conversion_rate'].mean():.1f}%)"
+                                elif row['total_visitors'] < comparison_df['total_visitors'].mean():
+                                    insights_comparison += f"\n- **{row['product_name']}**: 마케팅 강화로 방문자 유입 증대"
+                                else:
+                                    insights_comparison += f"\n- **{row['product_name']}**: 현재 성과 유지 및 프리미엄 전략"
+                            
+                            st.success(insights_comparison)
+                            
+                            # 비교 데이터 테이블
+                            with st.expander("📋 상세 비교 데이터"):
+                                display_df = comparison_df.copy()
+                                display_df.columns = ['제품명', '방문자', '구매자', '구매 건수', '총 매출', '평균 주문액', '총 판매량', '전환율', '모바일', '데스크톱']
+                                st.dataframe(display_df, use_container_width=True)
+                        
+                        else:
+                            st.warning("비교 데이터가 없습니다.")
                         
             except Exception as e:
                 st.error(f"❌ 분석 오류: {str(e)}")
