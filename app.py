@@ -9,8 +9,8 @@ import google.generativeai as genai
 # 1. 페이지 설정
 st.set_page_config(page_title="SIDIZ Intelligence Dashboard", layout="wide")
 
-if "gemini_api_key" in st.secrets:
-    genai.configure(api_key=st.secrets["gemini_api_key"])
+if "gemini" in st.secrets and "gemini_api_key" in st.secrets["gemini"]:
+    genai.configure(api_key=st.secrets["gemini"]["gemini_api_key"])
     model = genai.GenerativeModel('gemini-1.5-flash')
     HAS_GEMINI = True
 else:
