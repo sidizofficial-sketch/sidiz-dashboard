@@ -24,7 +24,7 @@ client = get_bq_client()
 def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
     if client is None: return None, None
     
-    # 시간 단위별 레이블 설정
+    # 시간 단위별 레이블 설정 (SQL 내에서 가독성을 위해 미리 문자열 생성)
     if time_unit == "일별":
         group_sql = "CAST(date AS STRING)"
     elif time_unit == "주별":
@@ -32,7 +32,8 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
     else: # 월별
         group_sql = "CONCAT(CAST(DATE_TRUNC(date, MONTH) AS STRING), ' ~ ', CAST(LAST_DAY(date, MONTH) AS STRING))"
 
-    # 요약 데이터 쿼리
+    # 1. 요약 데이터용 쿼리 (Current vs Previous)
+    # f-string 내부에 중괄호가 겹치지 않도록 주의하여 작성
     summary_query = f"""
     WITH raw_data AS (
       SELECT 
@@ -43,28 +44,4 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
         event_name,
         ecommerce.purchase_revenue
       FROM `sidiz-458301.analytics_487246344.events_*`
-      WHERE _TABLE_SUFFIX BETWEEN '{min(start_c, start_p).strftime('%Y%m%d')}' AND '{max(end_c, end_p).strftime('%Y%m%d')}'
-    )
-    SELECT 
-        CASE 
-            WHEN date BETWEEN '{start_c}' AND '{end_c}' THEN 'Current' 
-            WHEN date BETWEEN '{start_p}' AND '{end_p}' THEN 'Previous' 
-        END as type,
-        COUNT(DISTINCT user_pseudo_id) as users,
-        COUNT(DISTINCT CASE WHEN session_num = 1 THEN user_pseudo_id END) as new_users,
-        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(session_id AS STRING))) as sessions,
-        COUNTIF(event_name = 'purchase') as orders,
-        SUM(purchase_revenue) as revenue
-    FROM raw_data
-    WHERE session_id IS NOT NULL
-    GROUP BY 1
-    HAVING type IS NOT NULL
-    """
-
-    # 시계열 데이터 쿼리
-    ts_query = f"""
-    WITH ts_raw AS (
-      SELECT 
-        PARSE_DATE('%Y%m%d', event_date) as date,
-        user_pseudo_id,
-        (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session
+      WHERE _TABLE_SUFFIX BETWEEN '{min(start_c,
