@@ -132,4 +132,34 @@ if len(curr_d) == 2 and len(comp_d) == 2:
         
         cvr = (curr['orders']/curr['sessions']*100) if curr['sessions'] > 0 else 0
         prev_cvr = (prev['orders']/prev['sessions']*100) if prev['sessions'] > 0 else 0
-        k4.metric("구매전환율(CVR)", f"{cvr:.2f}%", delta(cvr, prev_
+        k4.metric("구매전환율(CVR)", f"{cvr:.2f}%", delta(cvr, prev_cvr))
+
+        # [섹션 2: AI 인사이트]
+        if HAS_GEMINI:
+            with st.expander("🤖 AI 비즈니스 분석 리포트", expanded=True):
+                if st.button("인사이트 생성"):
+                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    prompt = f"시디즈 매출 ₩{int(curr['revenue']):,}, 주문 {curr['orders']}건, CVR {cvr:.2f}%입니다. 전기 대비 매출 변동은 {delta(curr['revenue'], prev['revenue'])}입니다. 분석 결과를 요약해줘."
+                    st.write(model.generate_content(prompt).text)
+
+        # [섹션 3: 추이 그래프]
+        st.markdown("---")
+        st.subheader(f"📊 {time_unit} 매출 및 세션 추이")
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=ts_df['period_label'], y=ts_df['revenue'], name='매출', marker_color='#2ca02c'))
+        fig.add_trace(go.Scatter(x=ts_df['period_label'], y=ts_df['sessions'], name='세션', yaxis='y2', line=dict(color='#1f77b4', width=3)))
+        fig.update_layout(
+            yaxis=dict(title="매출액 (₩)"),
+            yaxis2=dict(title="세션 수", overlaying='y', side='right'),
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # [섹션 4: 상세 분석]
+        st.markdown("---")
+        st.subheader("📍 고유 상품별 정밀 성과")
+        if not prod_df.empty:
+            prod_df['item_name'] = prod_df['item_name'].apply(clean_product_name)
+            final_prod = prod_df.groupby('item_name').sum().reset_index().sort_values('revenue', ascending=False)
+            st.dataframe(final_prod.style.format({'revenue': '₩{:,.0f}', 'orders': '{:,}'}), use_container_width=True)
