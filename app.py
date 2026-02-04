@@ -98,9 +98,24 @@ st.title("🪑 SIDIZ AI Intelligence Dashboard")
 
 with st.sidebar:
     st.header("⚙️ 분석 설정")
-    curr_date = st.date_input("분석 기간 (Current)", [datetime.now() - timedelta(days=8), datetime.now() - timedelta(days=1)])
-    comp_date = st.date_input("비교 기간 (Previous)", [datetime.now() - timedelta(days=16), datetime.now() - timedelta(days=9)])
-    time_unit = st.selectbox("추이 분석 단위", ["일별", "주별", "월별"])
+
+    curr_date = st.date_input(
+        "분석 기간 (Current)",
+        [datetime.now() - timedelta(days=8), datetime.now() - timedelta(days=1)],
+        key="curr_date"
+    )
+
+    comp_date = st.date_input(
+        "비교 기간 (Previous)",
+        [datetime.now() - timedelta(days=16), datetime.now() - timedelta(days=9)],
+        key="prev_date"
+    )
+
+    time_unit = st.selectbox(
+        "추이 분석 단위",
+        ["일별", "주별", "월별"],
+        key="time_unit"
+    )
 
 if len(curr_date) == 2 and len(comp_date) == 2:
     summary_df, ts_df = get_dashboard_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1], time_unit)
