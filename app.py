@@ -108,5 +108,17 @@ if len(curr_range) == 2 and len(prev_range) == 2:
             # st.write(response.text)
             st.info("AI 연결 설정(API Key)이 완료되면 여기에 분석 결과가 출력됩니다.")
 
+SELECT 
+    -- 1. 단순 합계 (현재 스트림릿 방식)
+    SUM(sessions) as sum_sessions,
+    SUM(purchase) as sum_purchase,
+    
+    -- 2. 고유 개수 (루커스튜디오가 주로 쓰는 방식)
+    COUNT(DISTINCT sessions) as distinct_sessions, -- 세션 ID가 컬럼으로 있을 경우
+    COUNT(DISTINCT is_active_user) as distinct_users -- 사용자 ID가 컬럼으로 있을 경우
+    
+FROM `your-project.ga4_dashboard.basic_table`
+WHERE date = '2024-02-03' -- 루커와 동일한 하루 날짜
+
 else:
     st.warning("사이드바에서 시작일과 종료일을 모두 선택해주세요.")
