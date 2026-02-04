@@ -1,31 +1,26 @@
 import streamlit as st
 from google.cloud import bigquery
-import pandas as pd
 
-st.title("BQ 구조 확인 (임시)")
+st.title("BigQuery 연결 테스트")
 
-@st.cache_data
-def get_bq_tables(project_id, dataset_id):
-    client = bigquery.Client(project=project_id)
+st.write("1️⃣ BigQuery Client 생성 중...")
 
-    query = f"""
-    SELECT
-      table_name,
-      creation_time,
-      row_count,
-      size_bytes
-    FROM `{project_id}.{dataset_id}.__TABLES__`
-    ORDER BY table_name
-    """
+try:
+    client = bigquery.Client()
+    st.success("✅ BigQuery Client 생성 성공")
+except Exception as e:
+    st.error("❌ Client 생성 실패")
+    st.exception(e)
+    st.stop()
 
-    return client.query(query).to_dataframe()
+st.write("2️⃣ 단순 쿼리 실행 중...")
 
-if st.checkbox("📌 BigQuery 테이블 구조 확인"):
-    with st.spinner("BigQuery 조회 중..."):
-        df_tables = get_bq_tables(
-            project_id="sidiz-458301",
-            dataset_id="analytics_487246344"
-        )
+QUERY = "SELECT 1 AS test_col"
 
-    st.success("조회 완료")
-    st.dataframe(df_tables, use_container_width=True)
+try:
+    df = client.query(QUERY).to_dataframe()
+    st.success("✅ 쿼리 실행 성공")
+    st.dataframe(df)
+except Exception as e:
+    st.error("❌ 쿼리 실행 실패")
+    st.exception(e)
