@@ -1,26 +1,26 @@
 import streamlit as st
 from google.cloud import bigquery
+from google.oauth2 import service_account
 
 st.title("BigQuery 연결 테스트")
 
-st.write("1️⃣ BigQuery Client 생성 중...")
+# 1️⃣ Secrets 확인 (디버깅용, 나중에 삭제 가능)
+st.write("Secrets keys:", list(st.secrets.keys()))
+st.write("Project ID:", st.secrets["gcp_service_account"]["project_id"])
 
-try:
-    client = bigquery.Client()
-    st.success("✅ BigQuery Client 생성 성공")
-except Exception as e:
-    st.error("❌ Client 생성 실패")
-    st.exception(e)
-    st.stop()
+# 2️⃣ Credentials 생성
+credentials = service_account.Credentials.from_service_account_info(
+    st.secrets["gcp_service_account"]
+)
 
-st.write("2️⃣ 단순 쿼리 실행 중...")
+# 3️⃣ BigQuery Client 생성 (중요!)
+client = bigquery.Client(
+    credentials=credentials,
+    project=credentials.project_id
+)
 
-QUERY = "SELECT 1 AS test_col"
+st.success("✅ BigQuery Client 생성 성공")
 
-try:
-    df = client.query(QUERY).to_dataframe()
-    st.success("✅ 쿼리 실행 성공")
-    st.dataframe(df)
-except Exception as e:
-    st.error("❌ 쿼리 실행 실패")
-    st.exception(e)
+# 4️⃣ 실제 쿼리 테스트
+df = client.query("SELECT 1 AS ok").to_dataframe()
+st.dataframe(df)
