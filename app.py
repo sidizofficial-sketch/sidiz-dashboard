@@ -26,7 +26,7 @@ def run_kpi_query(start_date, end_date):
             SUM(purchase) as purchase,
             SUM(purchase_revenue) as revenue,
             SUM(pageviews) as pv
-        FROM `your-project.ga4_dashboard.basic_table`
+        FROM `sidiz-458301.ga4_dashboard.basic_table`
         WHERE date BETWEEN '{s_str}' AND '{e_str}'
     """
     try:
