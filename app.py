@@ -16,7 +16,7 @@ def run_kpi_query(start_date, end_date):
     s_str = start_date.strftime('%Y-%m-%d')
     e_str = end_date.strftime('%Y-%m-%d')
     
-    # 1. 여기에 실제 프로젝트 ID와 테이블 경로를 넣으세요
+    # 쿼리 전체를 f""" 로 시작해서 """ 로 닫으세요
     query = f"""
         SELECT 
             SUM(sessions) as sessions,
@@ -26,6 +26,10 @@ def run_kpi_query(start_date, end_date):
         FROM `sidiz-458301.ga4_dashboard.basic_table`
         WHERE date BETWEEN '{s_str}' AND '{e_str}'
     """
+    
+    # 그 다음 client.query(query)를 실행합니다.
+    query_job = client.query(query)
+    return query_job.to_dataframe().iloc[0]
     
     # 2. 이 아래 부분을 아래와 같이 수정하세요
     try:
