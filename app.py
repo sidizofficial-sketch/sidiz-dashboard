@@ -120,7 +120,8 @@ def generate_deep_report(curr, prev, source_df):
     """
     try:
         return model.generate_content(prompt).text
-    except: return "인사이트 생성 실패"
+    except Exception as e:
+    return f"❌ 인사이트 생성 실패: {e}"
 
 # -------------------------------------------------
 # 4. 메인 UI 및 출력
