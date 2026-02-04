@@ -13,33 +13,30 @@ st.set_page_config(page_title="시디즈 데이터 인사이트", layout="wide")
 
 # 2. 데이터 추출 함수 (BigQuery)
 def run_kpi_query(start_date, end_date):
-    """특정 기간의 KPI 합계를 가져오는 함수"""
-    # 날짜 객체를 문자열로 변환
     s_str = start_date.strftime('%Y-%m-%d')
     e_str = end_date.strftime('%Y-%m-%d')
     
-    # basic_table 기준 쿼리
+    # 1. 여기에 실제 프로젝트 ID와 테이블 경로를 넣으세요
     query = f"""
         SELECT 
             SUM(sessions) as sessions,
             SUM(is_active_user) as users,
             SUM(purchase) as purchase,
-            SUM(purchase_revenue) as revenue,
-            SUM(pageviews) as pv
+            SUM(purchase_revenue) as revenue
         FROM `sidiz-458301.ga4_dashboard.basic_table`
         WHERE date BETWEEN '{s_str}' AND '{e_str}'
     """
+    
+    # 2. 이 아래 부분을 아래와 같이 수정하세요
     try:
-        # 실제 연결 시 아래 주석 해제
-        # return client.query(query).to_dataframe().iloc[0]
-        
-        # [테스트용 더미 데이터] 실제 연결 전까지 화면 확인용
-        return pd.Series({
-            'sessions': 150000, 'users': 95000, 
-            'purchase': 1200, 'revenue': 180000000, 'pv': 450000
-        })
+        query_job = client.query(query)  # 실제 쿼리 실행
+        result = query_job.to_dataframe()
+        if not result.empty:
+            return result.iloc[0]
+        else:
+            return pd.Series({'sessions':0, 'users':0, 'purchase':0, 'revenue':0})
     except Exception as e:
-        st.error(f"BQ 에러: {e}")
+        st.error(f"실제 BQ 연결 실패: {e}")
         return None
 
 # 3. 사이드바 - 기간 컨트롤
@@ -107,17 +104,8 @@ if len(curr_range) == 2 and len(prev_range) == 2:
             # response = model.generate_content(context)
             # st.write(response.text)
             st.info("AI 연결 설정(API Key)이 완료되면 여기에 분석 결과가 출력됩니다.")
-
-SELECT 
-    -- 1. 단순 합계 (현재 스트림릿 방식)
-    SUM(sessions) as sum_sessions,
-    SUM(purchase) as sum_purchase,
     
-    -- 2. 고유 개수 (루커스튜디오가 주로 쓰는 방식)
-    COUNT(DISTINCT sessions) as distinct_sessions, -- 세션 ID가 컬럼으로 있을 경우
-    COUNT(DISTINCT is_active_user) as distinct_users -- 사용자 ID가 컬럼으로 있을 경우
-    
-FROM `your-project.ga4_dashboard.basic_table`
+FROM `sidiz-458301.ga4_dashboard.basic_table`
 WHERE date = '2024-02-03' -- 루커와 동일한 하루 날짜
 
 else:
