@@ -1,127 +1,173 @@
 import streamlit as st
-import google.generativeai as genai
 from google.cloud import bigquery
-from datetime import datetime, timedelta
 import pandas as pd
-import html
-import time
+import json
+from datetime import datetime, timedelta
+import plotly.graph_objects as go
+import google.generativeai as genai
 
 # 1. 페이지 설정
-st.set_page_config(
-    page_title="시디즈 UX 라이팅 & 데이터 인사이트",
-    page_icon="✏️",
-    layout="wide"
-)
+st.set_page_config(page_title="SIDIZ Analytics", layout="wide")
 
-# 2. 스타일 설정 (한자/깨짐 방지 및 버튼 스타일)
-st.markdown("""
-<style>
-    .kpi-card { background-color: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid #0066cc; }
-    .response-container { position: relative; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
-</style>
-""", unsafe_allow_html=True)
-
-# 3. API 및 클라이언트 설정
-try:
-    # Gemini 설정
+# Gemini 설정 (Secrets 키 명칭 확인 필요)
+if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
     genai.configure(api_key=st.secrets["gemini"]["api_key"])
     model = genai.GenerativeModel('gemini-1.5-flash')
-    
-    # BigQuery 설정
-    bq_client = bigquery.Client.from_service_account_info(st.secrets["gcp_service_account"])
-except Exception as e:
-    st.error(f"⚠️ 설정 로드 오류: {e}")
-    st.stop()
+    HAS_GEMINI = True
+else:
+    HAS_GEMINI = False
 
-# 4. 데이터 로드 함수 (에러 로깅 강화)
+# 2. BigQuery 클라이언트 설정
+@st.cache_resource
+def get_bq_client():
+    try:
+        # st.secrets 구조에 따라 접근 방식 수정
+        if "gcp_service_account" in st.secrets:
+            info = dict(st.secrets["gcp_service_account"])
+            # JSON 내부 필드가 문자열로 박혀있는 경우 처리
+            if "json_key" in info:
+                info = json.loads(info["json_key"])
+            return bigquery.Client.from_service_account_info(info, location="asia-northeast3")
+    except Exception as e:
+        st.error(f"❌ BigQuery 인증 실패: {e}")
+        return None
+
+client = get_bq_client()
+
+# 3. 상품명 정제 로직
+def clean_product_name(name):
+    if not name: return name
+    for char in [' - ', ' / ', ' (']:
+        if char in name:
+            name = name.split(char)[0]
+    return name.strip()
+
 @st.cache_data(ttl=3600)
-def get_dashboard_data(start_date, end_date):
-    # 날짜 형식을 BQ STRING 형식('2026-02-04')으로 강제 변환
-    s_date = start_date.strftime('%Y-%m-%d')
-    e_date = end_date.strftime('%Y-%m-%d')
+def get_master_item_list():
+    if client is None: return pd.DataFrame(columns=['clean_name'])
+    # _TABLE_SUFFIX를 STRING으로 비교하여 속도 향상
+    query = """
+    SELECT DISTINCT item.item_name 
+    FROM `sidiz-458301.analytics_487246344.events_*`, UNNEST(items) as item
+    WHERE _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 90 DAY))
+    AND item.item_name IS NOT NULL AND item.item_name NOT IN ('(not set)', '')
+    """
+    try:
+        df = client.query(query).to_dataframe()
+        df['clean_name'] = df['item_name'].apply(clean_product_name)
+        return df[['clean_name']].drop_duplicates().sort_values('clean_name')
+    except Exception as e:
+        st.sidebar.error(f"상품 목록 로드 실패: {e}")
+        return pd.DataFrame(columns=['clean_name'])
+
+# 4. 데이터 추출 함수 (에러 상세 출력 추가)
+def get_kpi_data(start_c, end_c, start_p, end_p):
+    s_c = start_c.strftime('%Y%m%d')
+    e_c = end_c.strftime('%Y%m%d')
     
-    # [수정 포인트] Canonical View(SSOT) 사용을 권장하며, 현재는 디버깅을 위해 간단한 쿼리로 예시
-    # 실제 본인의 쿼리 템플릿으로 교체하세요.
-    kpi_query = f"""
-        SELECT 
-            SUM(sessions) as total_sessions,
-            SUM(active_users) as total_users,
-            SAFE_DIVIDE(SUM(conversions), SUM(sessions)) * 100 as cvr
-        FROM `your_project.analytics.canonical_daily_metrics`
-        WHERE date BETWEEN '{s_date}' AND '{e_date}'
+    # 기본 쿼리 (Canonical 작업 전이므로 원본 활용)
+    query = f"""
+    SELECT 
+        '{start_c}' as period_start,
+        COUNT(DISTINCT user_pseudo_id) as users,
+        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions,
+        COUNTIF(event_name = 'purchase') as orders,
+        SUM(ecommerce.purchase_revenue) as revenue
+    FROM `sidiz-458301.analytics_487246344.events_*`
+    WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
     """
     
+    if start_p and end_p:
+        s_p = start_p.strftime('%Y%m%d')
+        e_p = end_p.strftime('%Y%m%d')
+        query = f"({query}) UNION ALL (SELECT '{start_p}', COUNT(DISTINCT user_pseudo_id), COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))), COUNTIF(event_name = 'purchase'), SUM(ecommerce.purchase_revenue) FROM `sidiz-458301.analytics_487246344.events_*` WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}')"
+    
     try:
-        job = bq_client.query(kpi_query)
-        result = job.to_dataframe()
-        return result
+        return client.query(query).to_dataframe()
     except Exception as e:
-        # 가려진 에러(Redacted)를 방지하기 위해 상세 에러를 화면에 띄움
-        st.error("❌ BigQuery 실행 상세 에러 발생")
-        st.code(str(e)) # 한자 깨짐이나 SQL 문법 오류가 여기서 확인됨
+        # 한자 오류/Redacted 방지를 위해 상세 에러 강제 출력
+        st.error("🚨 BigQuery 쿼리 실행 에러 발생")
+        st.code(str(e)) # 여기서 실제 원인이 나옵니다.
         return pd.DataFrame()
 
-# 5. 사이드바 - 글로벌 컨트롤
+# 5. 사이드바
 with st.sidebar:
     st.header("📅 기간 설정")
-    today = datetime.now()
-    d = st.date_input("조회 기간", [today - timedelta(days=7), today])
+    yesterday = datetime.now() - timedelta(days=1)
+    seven_days_ago = yesterday - timedelta(days=6)
+    curr_d = st.date_input("분석 기간 (Current)", [seven_days_ago, yesterday])
     
-    st.divider()
-    if st.button("🗑️ 세션 초기화"):
-        st.session_state.clear()
-        st.rerun()
+    use_compare = st.checkbox("비교 기간 사용 (Previous)")
+    comp_d = [None, None]
+    if use_compare:
+        comp_d = st.date_input("비교 기간 선택", [seven_days_ago - timedelta(days=7), yesterday - timedelta(days=7)])
 
-# 6. 메인 UI - KPI 영역 (기존 지표 복구)
-st.title("📊 시디즈 데이터 인사이트")
-
-if len(d) == 2:
-    data = get_dashboard_data(d[0], d[1])
+    st.markdown("---")
+    st.header("🔍 제품 필터")
+    master_items = get_master_item_list()
+    search_kw = st.text_input("제품명 키워드 검색", value="T50")
     
-    if not data.empty:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("총 세션 수", f"{data['total_sessions'][0]:,}")
-        with col2:
-            st.metric("활성 사용자", f"{data['total_users'][0]:,}")
-        with col3:
-            st.metric("전환율(CVR)", f"{data['cvr'][0]:.2f}%")
-    else:
-        st.warning("선택한 기간에 데이터가 없거나 쿼리 오류가 있습니다.")
+    selected_names = []
+    if not master_items.empty:
+        filtered = master_items[master_items['clean_name'].str.contains(search_kw, case=False, na=False)]
+        selected_names = st.multiselect("분석할 상품명 선택", options=filtered['clean_name'].unique())
 
-st.divider()
-
-# 7. AI 분석 및 질문 영역 (Tab 구조)
-tab1, tab2 = st.tabs(["💬 AI 어시스턴트", "📝 자동 리포트"])
+# 6. 메인 화면
+tab1, tab2 = st.tabs(["📊 전체 KPI 현황", "🪑 제품별 상세 분석"])
 
 with tab1:
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    if len(curr_d) == 2:
+        kpi_res = get_kpi_data(curr_d[0], curr_d[1], comp_d[0] if use_compare else None, comp_d[1] if use_compare else None)
+        
+        if not kpi_res.empty:
+            curr = kpi_res.iloc[0]
+            prev = kpi_res.iloc[1] if len(kpi_res) > 1 else curr
+            
+            st.subheader("🎯 핵심 성과 요약")
+            c1, c2, c3, c4 = st.columns(4)
+            
+            def delta(c, p):
+                if not use_compare or p == 0: return None
+                return f"{((float(c)-float(p))/float(p)*100):+.1f}%"
 
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-
-    if prompt := st.chat_input("데이터에 대해 궁금한 점을 물어보세요"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            try:
-                # 데이터 컨텍스트 포함 (숫자 데이터 -> 텍스트)
-                context = data.to_string() if not data.empty else "데이터 없음"
-                full_prompt = f"다음 데이터를 바탕으로 질문에 답해줘:\n{context}\n\n질문: {prompt}"
-                
-                response = model.generate_content(full_prompt)
-                st.markdown(response.text)
-                st.session_state.messages.append({"role": "assistant", "content": response.text})
-            except Exception as e:
-                st.error(f"Gemini 오류: {e}")
+            c1.metric("매출액", f"₩{int(curr['revenue'] or 0):,}", delta(curr['revenue'], prev['revenue']))
+            c2.metric("주문수", f"{int(curr['orders']):,}", delta(curr['orders'], prev['orders']))
+            c3.metric("세션", f"{int(curr['sessions']):,}", delta(curr['sessions'], prev['sessions']))
+            cvR = (curr['orders']/curr['sessions']*100) if curr['sessions'] > 0 else 0
+            c4.metric("구매전환율", f"{cvR:.2f}%")
+            
+            # AI 분석 추가 (원하실 경우)
+            if HAS_GEMINI and st.button("AI 인사이트 도출"):
+                with st.spinner("데이터 분석 중..."):
+                    res = model.generate_content(f"다음 시디즈 지표를 분석해줘: 매출 ₩{curr['revenue']}, 주문 {curr['orders']}, 세션 {curr['sessions']}")
+                    st.info(res.text)
+        else:
+            st.error("데이터를 불러오지 못했습니다. 위 에러 메시지를 확인하세요.")
 
 with tab2:
-    st.subheader("🤖 AI 종합 리포트")
-    if st.button("리포트 생성"):
-        with st.spinner("데이터 분석 중..."):
-            # 리포트 생성 로직
-            st.write("분석된 리포트 내용이 여기에 표시됩니다.")
+    if not selected_names:
+        st.info("사이드바에서 상품명을 선택해 주세요.")
+    else:
+        # 상품명 쿼리 보정
+        name_filters = " OR ".join([f"item.item_name LIKE '{n}%'" for n in selected_names])
+        p_query = f"""
+            SELECT 
+                item.item_name, 
+                COUNTIF(event_name='view_item') as views, 
+                COUNTIF(event_name='purchase') as orders, 
+                SUM(item.item_revenue) as revenue
+            FROM `sidiz-458301.analytics_487246344.events_*`, UNNEST(items) as item
+            WHERE _TABLE_SUFFIX BETWEEN '{curr_d[0].strftime('%Y%m%d')}' AND '{curr_d[1].strftime('%Y%m%d')}'
+            AND ({name_filters})
+            GROUP BY 1 ORDER BY revenue DESC
+        """
+        try:
+            res_df = client.query(p_query).to_dataframe()
+            if not res_df.empty:
+                res_df['item_name'] = res_df['item_name'].apply(clean_product_name)
+                final_df = res_df.groupby('item_name').sum().reset_index()
+                st.subheader(f"🔍 선택 상품 통합 성과")
+                st.dataframe(final_df.style.format({'revenue': '₩{:,.0f}'}), use_container_width=True)
+        except Exception as e:
+            st.error("상품 상세 분석 중 오류 발생")
+            st.code(str(e))
