@@ -4,9 +4,18 @@ import pandas as pd
 import json
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
+import google.generativeai as genai
 
 # 1. 페이지 설정
 st.set_page_config(page_title="SIDIZ Intelligence Dashboard", layout="wide")
+
+# Gemini 설정 (Secrets에 gemini_api_key가 등록되어 있어야 함)
+if "gemini_api_key" in st.secrets:
+    genai.configure(api_key=st.secrets["gemini_api_key"])
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    HAS_GEMINI = True
+else:
+    HAS_GEMINI = False
 
 # 2. BigQuery 클라이언트
 @st.cache_resource
@@ -20,27 +29,25 @@ def get_bq_client():
 
 client = get_bq_client()
 
-# 3. 데이터 추출 함수
+# 3. 데이터 추출 함수 (유입 소스 분석 추가)
 def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
-    if client is None: return None, None
+    if client is None: return None, None, None
     
-    # 시간 단위별 레이블 설정 (SQL 내에서 가독성을 위해 미리 문자열 생성)
     if time_unit == "일별":
         group_sql = "CAST(date AS STRING)"
     elif time_unit == "주별":
         group_sql = "CONCAT(CAST(DATE_TRUNC(date, WEEK) AS STRING), ' ~ ', CAST(LAST_DAY(date, WEEK) AS STRING))"
-    else: # 월별
+    else: 
         group_sql = "CONCAT(CAST(DATE_TRUNC(date, MONTH) AS STRING), ' ~ ', CAST(LAST_DAY(date, MONTH) AS STRING))"
 
-    # 1. 요약 데이터용 쿼리 (Current vs Previous)
-    # f-string 내부에 중괄호가 겹치지 않도록 주의하여 작성
+    # KPI 쿼리
     summary_query = f"""
     WITH raw_data AS (
       SELECT 
         PARSE_DATE('%Y%m%d', event_date) as date,
         user_pseudo_id,
-        (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') as session_id,
-        (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number') as session_num,
+        (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
+        (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as session_num,
         event_name,
         ecommerce.purchase_revenue
       FROM `sidiz-458301.analytics_487246344.events_*`
@@ -48,109 +55,102 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
     )
     SELECT 
         CASE 
-            WHEN date BETWEEN '{start_c.strftime('%Y-%m-%d')}' AND '{end_c.strftime('%Y-%m-%d')}' THEN 'Current' 
-            WHEN date BETWEEN '{start_p.strftime('%Y-%m-%d')}' AND '{end_p.strftime('%Y-%m-%d')}' THEN 'Previous' 
+            WHEN date BETWEEN '{start_c}' AND '{end_c}' THEN 'Current' 
+            WHEN date BETWEEN '{start_p}' AND '{end_p}' THEN 'Previous' 
         END as type,
         COUNT(DISTINCT user_pseudo_id) as users,
         COUNT(DISTINCT CASE WHEN session_num = 1 THEN user_pseudo_id END) as new_users,
         COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(session_id AS STRING))) as sessions,
         COUNTIF(event_name = 'purchase') as orders,
         SUM(purchase_revenue) as revenue
-    FROM raw_data
-    WHERE session_id IS NOT NULL
-    GROUP BY 1
-    HAVING type IS NOT NULL
+    FROM raw_data WHERE session_id IS NOT NULL GROUP BY 1 HAVING type IS NOT NULL
     """
 
-    # 2. 시계열 데이터용 쿼리 (Current 기간만)
+    # 시계열 쿼리
     ts_query = f"""
-    WITH ts_raw AS (
-      SELECT 
-        PARSE_DATE('%Y%m%d', event_date) as date,
-        user_pseudo_id,
-        (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') as session_id,
-        event_name,
-        ecommerce.purchase_revenue
-      FROM `sidiz-458301.analytics_487246344.events_*`
-      WHERE _TABLE_SUFFIX BETWEEN '{start_c.strftime('%Y%m%d')}' AND '{end_c.strftime('%Y%m%d')}'
-    )
-    SELECT 
-        {group_sql} as period_label,
-        SUM(purchase_revenue) as revenue,
-        COUNTIF(event_name = 'purchase') as orders,
-        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(session_id AS STRING))) as sessions
-    FROM ts_raw
-    WHERE session_id IS NOT NULL
-    GROUP BY 1
-    ORDER BY 1
+    SELECT {group_sql} as period_label, SUM(ecommerce.purchase_revenue) as revenue,
+    COUNTIF(event_name = 'purchase') as orders,
+    COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions
+    FROM `sidiz-458301.analytics_487246344.events_*`
+    WHERE _TABLE_SUFFIX BETWEEN '{start_c.strftime('%Y%m%d')}' AND '{end_c.strftime('%Y%m%d')}'
+    GROUP BY 1 ORDER BY 1
+    """
+
+    # AI를 위한 매체 분석 쿼리 추가
+    source_query = f"""
+    SELECT traffic_source.source, COUNTIF(event_name = 'purchase') as orders, SUM(ecommerce.purchase_revenue) as revenue
+    FROM `sidiz-458301.analytics_487246344.events_*`
+    WHERE _TABLE_SUFFIX BETWEEN '{start_c.strftime('%Y%m%d')}' AND '{end_c.strftime('%Y%m%d')}'
+    GROUP BY 1 ORDER BY revenue DESC LIMIT 5
     """
     
     try:
         summary_df = client.query(summary_query).to_dataframe()
         ts_df = client.query(ts_query).to_dataframe()
-        return summary_df, ts_df
+        source_df = client.query(source_query).to_dataframe()
+        return summary_df, ts_df, source_df
     except Exception as e:
-        st.error(f"⚠️ 데이터 쿼리 중 오류가 발생했습니다: {e}")
-        return None, None
+        st.error(f"⚠️ 데이터 쿼리 오류: {e}")
+        return None, None, None
 
-# 4. 메인 UI 구성
+# 4. 메인 UI
 st.title("🪑 SIDIZ AI Intelligence Dashboard")
 
 with st.sidebar:
     st.header("⚙️ 분석 설정")
-    curr_date = st.date_input("분석 기간 (Current)", [datetime.now() - timedelta(days=8), datetime.now() - timedelta(days=1)])
-    comp_date = st.date_input("비교 기간 (Previous)", [datetime.now() - timedelta(days=16), datetime.now() - timedelta(days=9)])
+    curr_date = st.date_input("분석 기간", [datetime.now() - timedelta(days=8), datetime.now() - timedelta(days=1)])
+    comp_date = st.date_input("비교 기간", [datetime.now() - timedelta(days=16), datetime.now() - timedelta(days=9)])
     time_unit = st.selectbox("추이 분석 단위", ["일별", "주별", "월별"])
 
 if len(curr_date) == 2 and len(comp_date) == 2:
-    summary_df, ts_df = get_dashboard_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1], time_unit)
+    summary_df, ts_df, source_df = get_dashboard_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1], time_unit)
     
     if summary_df is not None and not summary_df.empty:
-        # 지표 추출 및 화면 렌더링 (이전 로직 동일)
-        curr = summary_df[summary_df['type'] == 'Current'].iloc[0] if 'Current' in summary_df['type'].values else pd.Series(0, index=summary_df.columns)
-        prev = summary_df[summary_df['type'] == 'Previous'].iloc[0] if 'Previous' in summary_df['type'].values else pd.Series(0, index=summary_df.columns)
+        curr = summary_df[summary_df['type'] == 'Current'].iloc[0]
+        prev = summary_df[summary_df['type'] == 'Previous'].iloc[0] if 'Previous' in summary_df['type'].values else curr
 
-        def calc_delta(c, p):
-            if p == 0: return "0%"
-            return f"{((c - p) / p * 100):+.1f}%"
-
+        # [섹션 1: 핵심 성과 요약]
+        def calc_delta(c, p): return f"{((c - p) / p * 100):+.1f}%" if p > 0 else "0%"
         st.subheader("🎯 핵심 성과 요약")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("활성 사용자", f"{int(curr['users']):,}", calc_delta(curr['users'], prev['users']))
-        c2.metric("신규 사용자", f"{int(curr['new_users']):,}", calc_delta(curr['new_users'], prev['new_users']))
-        
-        curr_nv = (curr['new_users']/curr['users']*100) if curr['users']>0 else 0
-        prev_nv = (prev['new_users']/prev['users']*100) if prev['users']>0 else 0
-        c3.metric("신규 방문율", f"{curr_nv:.1f}%", f"{(curr_nv-prev_nv):+.1f}%p")
-        c4.metric("총 매출액", f"₩{int(curr['revenue']):,}", calc_delta(curr['revenue'], prev['revenue']))
+        c2.metric("신규 방문율", f"{(curr['new_users']/curr['users']*100 if curr['users']>0 else 0):.1f}%")
+        c3.metric("총 매출액", f"₩{int(curr['revenue'] or 0):,}", calc_delta(curr['revenue'], prev['revenue']))
+        c4.metric("구매전환율(CVR)", f"{(curr['orders']/curr['sessions']*100 if curr['sessions']>0 else 0):.2f}%")
 
+        # [섹션 2: 추이 분석]
         st.markdown("---")
-        c5, c6, c7, c8 = st.columns(4)
-        c5.metric("세션 수", f"{int(curr['sessions']):,}", calc_delta(curr['sessions'], prev['sessions']))
-        c6.metric("주문수", f"{int(curr['orders']):,}", calc_delta(curr['orders'], prev['orders']))
-        
-        curr_cr = (curr['orders']/curr['sessions']*100) if curr['sessions']>0 else 0
-        prev_cr = (prev['orders']/prev['sessions']*100) if prev['sessions']>0 else 0
-        c7.metric("구매전환율(CVR)", f"{curr_cr:.2f}%", f"{(curr_cr-prev_cr):+.2f}%p")
-        
-        curr_aov = (curr['revenue']/curr['orders']) if curr['orders']>0 else 0
-        prev_aov = (prev['revenue']/prev['orders']) if prev['orders']>0 else 0
-        c8.metric("평균 객단가(AOV)", f"₩{int(curr_aov):,}", calc_delta(curr_aov, prev_aov))
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=ts_df['period_label'], y=ts_df['revenue'], name='매출액', marker_color='#2ca02c'))
+        fig.add_trace(go.Scatter(x=ts_df['period_label'], y=ts_df['sessions'], name='세션', yaxis='y2', line=dict(color='#1f77b4')))
+        fig.update_layout(yaxis2=dict(overlaying='y', side='right'), template="plotly_white", hovermode="x unified")
+        st.plotly_chart(fig, use_container_width=True)
 
-        if ts_df is not None and not ts_df.empty:
-            st.markdown("---")
-            st.subheader(f"📊 {time_unit} 추이 분석 (매출액 / 주문수 / 세션)")
-            fig = go.Figure()
-            fig.add_trace(go.Bar(x=ts_df['period_label'], y=ts_df['revenue'], name='매출액', marker_color='#2ca02c', yaxis='y1'))
-            fig.add_trace(go.Scatter(x=ts_df['period_label'], y=ts_df['orders'], name='주문수', line=dict(color='#FF4B4B', width=3), yaxis='y2'))
-            fig.add_trace(go.Scatter(x=ts_df['period_label'], y=ts_df['sessions'], name='세션 수', line=dict(color='#1f77b4', width=2, dash='dot'), yaxis='y2'))
-            fig.update_layout(
-                yaxis=dict(title="매출액 (원)", side="left", tickformat=","),
-                yaxis2=dict(title="주문/세션 (건)", side="right", overlaying="y", tickformat=","),
-                hovermode="x unified", template="plotly_white",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            fig.update_yaxes(tickformat=",d") 
-            st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("사이드바에서 모든 기간을 선택해주세요.")
+        # [섹션 3: 🤖 AI 데이터 인사이트 요약]
+        st.markdown("---")
+        st.subheader("🤖 이 기간의 AI 분석 리포트")
+        
+        if HAS_GEMINI:
+            with st.spinner("AI가 빅쿼리 데이터를 심층 분석하고 있습니다..."):
+                # AI에게 줄 데이터 컨텍스트 생성
+                context = f"""
+                분석 데이터 요약:
+                - 매출: {int(curr['revenue']):,}원 (전기대비 {calc_delta(curr['revenue'], prev['revenue'])})
+                - 주문건수: {int(curr['orders'])}건
+                - 전환율: {(curr['orders']/curr['sessions']*100):.2f}%
+                - 상위 유입 채널: {', '.join(source_df['source'].tolist())}
+                """
+                
+                prompt = f"""
+                당신은 시디즈의 시니어 데이터 분석가입니다. 
+                아래 데이터를 바탕으로 현재 비즈니스 상황을 3줄로 요약하고, 
+                매출을 높이기 위한 가장 시급한 전략 1가지를 제안해주세요.
+                데이터: {context}
+                """
+                try:
+                    ai_res = model.generate_content(prompt).text
+                    st.info(ai_res)
+                except:
+                    st.warning("AI 분석 도중 오류가 발생했습니다.")
+        else:
+            st.warning("Gemini API 키가 설정되지 않았습니다.")
