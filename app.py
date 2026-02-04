@@ -2509,3 +2509,13 @@ if 'quick_query' in st.session_state and st.session_state['quick_query']:
         
         # 쿼리 실행 후 세션에서 제거
         del st.session_state['quick_query']
+
+
+st.title("BQ 구조 확인 (임시)")
+
+if st.checkbox("📌 BigQuery 테이블 구조 확인"):
+    df_tables = get_bq_tables(
+        project_id="your-project-id",
+        dataset_id="your-dataset-id"
+    )
+    st.dataframe(df_tables, use_container_width=True)
