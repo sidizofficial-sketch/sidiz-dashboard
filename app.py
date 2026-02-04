@@ -9,6 +9,15 @@ import plotly.graph_objects as go
 import requests
 from datetime import datetime, timedelta
 
+st.title("BQ 구조 확인 (임시)")
+
+if st.checkbox("📌 BigQuery 테이블 구조 확인"):
+    df_tables = get_bq_tables(
+        project_id="your-project-id",
+        dataset_id="your-dataset-id"
+    )
+    st.dataframe(df_tables, use_container_width=True)
+
 # 1. 페이지 설정
 st.set_page_config(page_title="SIDIZ AI Dashboard", page_icon="🪑", layout="wide")
 
@@ -2511,11 +2520,4 @@ if 'quick_query' in st.session_state and st.session_state['quick_query']:
         del st.session_state['quick_query']
 
 
-st.title("BQ 구조 확인 (임시)")
 
-if st.checkbox("📌 BigQuery 테이블 구조 확인"):
-    df_tables = get_bq_tables(
-        project_id="your-project-id",
-        dataset_id="your-dataset-id"
-    )
-    st.dataframe(df_tables, use_container_width=True)
