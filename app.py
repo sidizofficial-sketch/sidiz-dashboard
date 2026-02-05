@@ -176,22 +176,24 @@ if len(curr_date) == 2 and len(comp_date) == 2:
             return f"{((c - p) / p * 100):+.1f}%"
 
         st.subheader("🎯 핵심 성과 요약")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("활성 사용자", f"{int(curr['users']):,}", get_delta(curr['users'], prev['users']))
-        c1.metric("세션 수", f"{int(curr['sessions']):,}", get_delta(curr['sessions'], prev['sessions']))
-        
-        c2.metric("신규 사용자", f"{int(curr['new_users']):,}", get_delta(curr['new_users'], prev['new_users']))
-        c2.metric("주문 수", f"{int(curr['orders']):,}", get_delta(curr['orders'], prev['orders']))
-        
-        c_nv = (curr['new_users']/curr['users']*100) if curr['users'] > 0 else 0
-        p_nv = (prev['new_users']/prev['users']*100) if prev['users'] > 0 else 0
-        c3.metric("신규 방문율", f"{c_nv:.1f}%", f"{c_nv-p_nv:+.1f}%p")
-        c3.metric("구매전환율", f"{(curr['orders']/curr['sessions']*100):.2f}%", f"{(curr['orders']/curr['sessions']*100 - prev['orders']/prev['sessions']*100):+.2f}%p")
-        
-        c4.metric("총 매출액", f"₩{int(curr['revenue']):,}", get_delta(curr['revenue'], prev['revenue']))
-        c_aov = (curr['revenue']/curr['orders']) if curr['orders'] > 0 else 0
-        p_aov = (prev['revenue']/prev['orders']) if prev['orders'] > 0 else 0
-        c4.metric("평균 객단가(AOV)", f"₩{int(c_aov):,}", get_delta(c_aov, p_aov))
+
+        # 5컬럼 레이아웃으로 변경
+        row1 = st.columns(5)
+        row2 = st.columns(5)
+
+        # 첫 번째 줄: 유입 및 활동 중심
+        row1[0].metric("활성 사용자", f"{int(curr['users']):,}", get_delta(curr['users'], prev['users']))
+        row1[1].metric("세션 수", f"{int(curr['sessions']):,}", get_delta(curr['sessions'], prev['sessions']))
+        row1[2].metric("페이지뷰(PV)", f"{int(curr['pageviews']):,}", get_delta(curr['pageviews'], prev['pageviews'])) # ➕ 추가
+        row1[3].metric("신규 사용자", f"{int(curr['new_users']):,}", get_delta(curr['new_users'], prev['new_users']))
+        row1[4].metric("신규 방문율", f"{c_nv:.1f}%", f"{c_nv-p_nv:+.1f}%p")
+
+        # 두 번째 줄: 전환 및 매출 중심
+        row2[0].metric("회원가입 수", f"{int(curr['sign_ups']):,}", get_delta(curr['sign_ups'], prev['sign_ups'])) # ➕ 추가
+        row2[1].metric("주문 수", f"{int(curr['orders']):,}", get_delta(curr['orders'], prev['orders']))
+        row2[2].metric("구매전환율", f"{(curr['orders']/curr['sessions']*100):.2f}%", f"{(curr['orders']/curr['sessions']*100 - prev['orders']/prev['sessions']*100):+.2f}%p")
+        row2[3].metric("총 매출액", f"₩{int(curr['revenue']):,}", get_delta(curr['revenue'], prev['revenue']))
+        row2[4].metric("평균 객단가(AOV)", f"₩{int(c_aov):,}", get_delta(c_aov, p_aov))
 
         # [대량 구매 성과 섹션]
         st.markdown("---")
