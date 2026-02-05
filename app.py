@@ -168,9 +168,13 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         st.markdown("---")
         st.subheader("📦 대량 구매 세그먼트 (150만 원↑)")
         b1, b2, b3 = st.columns(3)
+
+        # 대량 구매 비율 계산
+        bulk_ratio = (curr['bulk_revenue'] / curr['revenue'] * 100) if curr['revenue'] > 0 else 0
+
         b1.metric("대량 주문 건수", f"{int(curr['bulk_orders'])}건", f"{int(curr['bulk_orders'] - prev['bulk_orders']):+}건")
         b2.metric("대량 구매 매출", f"₩{int(curr['bulk_revenue']):,}", get_delta(curr['bulk_revenue'], prev['bulk_revenue']))
-        b3.metric("대량 구매 매출 비중", f"{(curr['bulk_revenue']/curr['revenue']*100 if curr['revenue']>0 else 0):.1f}%")
+        b3.metric("대량 구매 매출 비중", f"{bulk_ratio:.1f}%")
 
         # [차트 섹션]
         st.markdown("---")
@@ -185,8 +189,9 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         st.markdown("---")
         st.subheader("💡 데이터 기반 인사이트 요약")
 
-        # 주요 지표 변화
         insights = []
+
+        # 주요 지표 변화
         if curr['revenue'] > prev['revenue']:
             insights.append(f"총 매출액이 전기 대비 {get_delta(curr['revenue'], prev['revenue'])} 증가했습니다.")
         else:
@@ -198,7 +203,7 @@ if len(curr_date) == 2 and len(comp_date) == 2:
             insights.append(f"주문 수가 전기 대비 {get_delta(curr['orders'], prev['orders'])} 감소했습니다.")
 
         # 대량 구매 영향
-        insights.append(f"대량 구매 매출 비중은 {b3.metric('dummy', 0)[0]}%로 전체 매출에 미치는 영향 참고 필요.")
+        insights.append(f"대량 구매 매출 비중은 {bulk_ratio:.1f}%로 전체 매출에 미치는 영향 참고 필요.")
 
         # 주요 유입 채널 요약
         if source_df is not None and not source_df.empty:
