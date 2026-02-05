@@ -185,34 +185,56 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         fig.update_layout(yaxis2=dict(overlaying="y", side="right"), template="plotly_white", hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
 
-        # [데이터 기반 인사이트 요약 섹션]
+        # -------------------------------------------------
+        # [고도화 인사이트 카드 섹션]
+        # -------------------------------------------------
         st.markdown("---")
-        st.subheader("💡 데이터 기반 인사이트 요약")
+        st.subheader("💡 데이터 기반 핵심 인사이트")
+        
+        # 데이터 계산 로직
+        bulk_ratio = (curr['bulk_revenue'] / curr['revenue'] * 100) if curr['revenue'] > 0 else 0
+        nu_ratio = (curr['new_users'] / curr['users'] * 100) if curr['users'] > 0 else 0
+        u_delta = ((curr['users'] - prev['users']) / prev['users'] * 100) if prev['users'] > 0 else 0
 
-        insights = []
+        i1, i2 = st.columns(2)
+        
+        with i1:
+            # 1. 총 매출액 인사이트
+            msg_rev = f"대량 구매가 전체 매출의 {bulk_ratio:.1f}%를 차지하며 성장을 견인 중" if bulk_ratio > 15 else "일반 구매 위주의 매출 구조 유지 중"
+            st.info(f"**💰 총 매출액**\n\n{msg_rev}")
+            
+            # 2. 주문수 인사이트
+            st.info(f"**📦 주문수 분석**\n\n총 주문 {int(curr['orders'])}건 중 대량 구매 주문 {int(curr['bulk_orders'])}건 포함")
+            
+            # 3. 사용자 분석
+            st.info(f"**👥 사용자 행동**\n\n활성 사용자 증감률 {u_delta:+.1f}%, 신규 사용자 비중 {nu_ratio:.1f}%")
 
-        # 주요 지표 변화
-        if curr['revenue'] > prev['revenue']:
-            insights.append(f"총 매출액이 전기 대비 {get_delta(curr['revenue'], prev['revenue'])} 증가했습니다.")
-        else:
-            insights.append(f"총 매출액이 전기 대비 {get_delta(curr['revenue'], prev['revenue'])} 감소했습니다.")
+        with i2:
+            # 4. 객단가 분석
+            aov_msg = "대량 구매 비중 상승으로 객단가 방어" if c_aov > p_aov else "객단가 하락세, 묶음 상품 구성 검토 필요"
+            st.success(f"**💳 평균 객단가 (AOV)**\n\n₩{int(c_aov):,} ({get_delta(c_aov, p_aov)}), {aov_msg}")
+            
+            # 5. 유입 채널 분석 (Top 3 추출)
+            if source_df is not None and not source_df.empty:
+                top_sources = source_df['source'].head(3).tolist()
+                st.success(f"**🔗 주요 유입 채널**\n\n{', '.join(top_sources)} 채널이 매출 상위 견인")
+            
+            # 6. 고객 행동/퍼널 (예시 로직 - 실제 이탈률 데이터 연결 가능)
+            st.success(f"**🛤️ 고객 행동/퍼널**\n\n평균 구매 수량 {(curr['orders']/curr['users'] if curr['users']>0 else 0):.1f}개, 결합 상품(쿠션, 발받침) 연계 판매 강화 필요")
 
-        if curr['orders'] > prev['orders']:
-            insights.append(f"주문 수가 전기 대비 {get_delta(curr['orders'], prev['orders'])} 증가했습니다.")
-        else:
-            insights.append(f"주문 수가 전기 대비 {get_delta(curr['orders'], prev['orders'])} 감소했습니다.")
-
-        # 대량 구매 영향
-        insights.append(f"대량 구매 매출 비중은 {bulk_ratio:.1f}%로 전체 매출에 미치는 영향 참고 필요.")
-
-        # 주요 유입 채널 요약
-        if source_df is not None and not source_df.empty:
-            top_sources = ", ".join(source_df['source'].head(3).tolist())
-            insights.append(f"주요 유입 채널: {top_sources} (매출 기준)")
-
-        # 카드 형태 출력
-        for insight in insights:
-            st.info(insight)
+        # [차트 섹션]
+        st.markdown("---")
+        st.subheader(f"📊 {time_unit} 매출 추이 및 대량 주문 현황")
+        fig = go.Figure()
+        fig.add_bar(x=ts_df['period_label'], y=ts_df['revenue'], name="전체 매출", marker_color='#2ca02c')
+        fig.add_scatter(x=ts_df['period_label'], y=ts_df['bulk_orders'], name="대량 주문수", yaxis="y2", line=dict(color='#FF4B4B', width=3))
+        fig.update_layout(
+            yaxis2=dict(overlaying="y", side="right", title="대량 주문수 (건)"),
+            template="plotly_white", 
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("💡 사이드바에서 기간을 선택해주세요.")
+    st.info("💡 사이드바에서 분석 기간을 선택해주세요.")
