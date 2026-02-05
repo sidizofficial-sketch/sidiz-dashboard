@@ -6,12 +6,11 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import google.generativeai as genai
 
-# 1. 페이지 설정
+# 1. 페이지 설정 및 글로벌 컨트롤 영역
 st.set_page_config(page_title="SIDIZ Intelligence Dashboard", layout="wide")
 
-# 글로벌 컨트롤 영역 스타일 (Sticky 느낌을 위한 캡션)
-st.caption("🌍 기준 타임존: Asia/Seoul | 🧩 데이터 기준: BQ Canonical (읽기 전용)")
-st.write("👉 이 데이터는 BigQuery 기준입니다. (정합성 확인용)")
+# 상단 고정 안내 문구 (정합성 질문 차단용)
+st.info("🌍 **기준 타임존**: Asia/Seoul | 🧩 **데이터 기준**: BQ Canonical (읽기 전용) | 👉 *이 데이터는 BigQuery 기준입니다.*")
 
 if "gemini" in st.secrets and "gemini_api_key" in st.secrets["gemini"]:
     genai.configure(api_key=st.secrets["gemini"]["gemini_api_key"])
@@ -32,7 +31,7 @@ def get_bq_client():
 client = get_bq_client()
 
 # -------------------------------------------------
-# 2. 데이터 추출 함수 (6개 템플릿 구조 반영)
+# 2. 데이터 추출 함수 (KPI 템플릿 최적화)
 # -------------------------------------------------
 def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
     if client is None: return None, None, None
@@ -44,7 +43,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
     elif time_unit == "주별": group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), WEEK)"
     else: group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
-    # SQL ① 핵심 KPI 집계 (PV, 회원가입 포함)
+    # SQL ① 핵심 KPI 집계 (페이지뷰, 회원가입 추가)
     query = f"""
     WITH base AS (
         SELECT 
@@ -69,7 +68,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
     FROM base GROUP BY 1 HAVING type IS NOT NULL
     """
 
-    # 매출 및 대량구매 추이
     ts_query = f"""
     SELECT 
         CAST({group_sql} AS STRING) as period_label, 
@@ -104,45 +102,22 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
         return None, None, None
 
 # -------------------------------------------------
-# 3. AI 인사이트 함수
-# -------------------------------------------------
-def generate_deep_report(curr, prev, source_df):
-    if not HAS_GEMINI: return "🤖 AI API 설정이 필요합니다."
-    
-    rev_delta = ((curr['revenue'] - prev['revenue']) / prev['revenue'] * 100) if prev['revenue'] > 0 else 0
-    c_cr = (curr['orders']/curr['sessions']*100) if curr['sessions'] > 0 else 0
-    c_bulk_share = (curr['bulk_revenue'] / curr['revenue'] * 100) if curr['revenue'] > 0 else 0
-    top_channels = source_df['channel_group'].tolist()[:3] if not source_df.empty else ["N/A"]
-
-    prompt = f"""
-    시디즈 데이터 전략가로서 보고서를 작성하세요.
-    [데이터] 매출: {int(curr['revenue']):,}원 ({rev_delta:+.1f}%), 전환율: {c_cr:.2f}%, 대량구매 비중: {c_bulk_share:.1f}%, 주요채널: {top_channels}
-    1.🎯 한 줄 요약: 매출 성패의 진짜 원인
-    2.🔎 현상 분석 (What): 대량구매 vs 일반구매 기여도 비교
-    3.💡 인과 추론 (Why): 채널 유입과 성과 상관관계
-    4.🚀 Action Plan: 전략 제안
-    """
-    try:
-        return model.generate_content(prompt).text
-    except: return "인사이트 생성 실패"
-
-# -------------------------------------------------
-# 4. 메인 UI 및 출력
+# 3. 메인 UI 및 출력
 # -------------------------------------------------
 st.title("🪑 SIDIZ Intelligence Dashboard")
 
 today = datetime.now()
 with st.sidebar:
     st.header("⚙️ 분석 설정")
-    curr_date = st.date_input("분석 기간", [today - timedelta(days=7), today - timedelta(days=1)])
-    comp_date = st.date_input("비교 기간", [today - timedelta(days=14), today - timedelta(days=8)])
+    curr_date = st.date_input("기준 기간 (Current)", [today - timedelta(days=7), today - timedelta(days=1)])
+    comp_date = st.date_input("비교 기간 (Previous)", [today - timedelta(days=14), today - timedelta(days=8)])
     time_unit = st.selectbox("추이 분석 단위", ["일별", "주별", "월별"])
 
 if len(curr_date) == 2 and len(comp_date) == 2:
     summary_df, ts_df, source_df = get_dashboard_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1], time_unit)
     
     if summary_df is not None and not summary_df.empty:
-        # 데이터 매핑 및 계산 로직 (NameError 방지)
+        # 데이터 매핑 및 사전 계산 (NameError 방지 핵심)
         curr = summary_df[summary_df['type'] == 'Current'].iloc[0]
         prev = summary_df[summary_df['type'] == 'Previous'].iloc[0] if 'Previous' in summary_df['type'].values else curr
 
@@ -150,6 +125,7 @@ if len(curr_date) == 2 and len(comp_date) == 2:
             if p == 0: return "0%"
             return f"{((c - p) / p * 100):+.1f}%"
 
+        # 비율 지표 계산
         c_nv = (curr['new_users'] / curr['users'] * 100) if curr['users'] > 0 else 0
         p_nv = (prev['new_users'] / prev['users'] * 100) if prev['users'] > 0 else 0
         c_cvr = (curr['orders'] / curr['sessions'] * 100) if curr['sessions'] > 0 else 0
@@ -157,26 +133,26 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         c_aov = (curr['revenue'] / curr['orders']) if curr['orders'] > 0 else 0
         p_aov = (prev['revenue'] / prev['orders']) if prev['orders'] > 0 else 0
 
-        # [1️⃣ 요약 KPI 영역: 10개 지표]
+        # [1️⃣ 요약 KPI 영역 (Executive Summary)]
         st.subheader("🎯 핵심 성과 요약")
         row1 = st.columns(5)
         row2 = st.columns(5)
 
-        # Row 1: 유입 및 활동
+        # Row 1: 활동성 및 유입
         row1[0].metric("활성 사용자", f"{int(curr['users']):,}", get_delta(curr['users'], prev['users']))
         row1[1].metric("세션 수", f"{int(curr['sessions']):,}", get_delta(curr['sessions'], prev['sessions']))
         row1[2].metric("페이지뷰(PV)", f"{int(curr['pageviews']):,}", get_delta(curr['pageviews'], prev['pageviews']))
         row1[3].metric("신규 사용자", f"{int(curr['new_users']):,}", get_delta(curr['new_users'], prev['new_users']))
         row1[4].metric("신규 방문율", f"{c_nv:.1f}%", f"{c_nv-p_nv:+.1f}%p")
 
-        # Row 2: 전환 및 매출
+        # Row 2: 전환 및 수익성
         row2[0].metric("회원가입 수", f"{int(curr['sign_ups']):,}", get_delta(curr['sign_ups'], prev['sign_ups']))
         row2[1].metric("주문 수", f"{int(curr['orders']):,}", get_delta(curr['orders'], prev['orders']))
         row2[2].metric("구매전환율", f"{c_cvr:.2f}%", f"{c_cvr-p_cvr:+.2f}%p")
         row2[3].metric("총 매출액", f"₩{int(curr['revenue']):,}", get_delta(curr['revenue'], prev['revenue']))
         row2[4].metric("평균 객단가(AOV)", f"₩{int(c_aov):,}", get_delta(c_aov, p_aov))
 
-        # [대량 구매 세그먼트]
+        # [대량 구매 성과 섹션]
         st.markdown("---")
         st.subheader("📦 대량 구매 세그먼트 (150만 원↑)")
         b1, b2, b3 = st.columns(3)
@@ -185,25 +161,14 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         b2.metric("대량 구매 매출", f"₩{int(curr['bulk_revenue']):,}", get_delta(curr['bulk_revenue'], prev['bulk_revenue']))
         b3.metric("대량 구매 매출 비중", f"{bulk_ratio:.1f}%")
 
-        # [차트 및 인사이트]
+        # [차트 섹션]
         st.markdown("---")
-        tab1, tab2 = st.tabs(["📊 매출 추이", "🧐 정밀 분석 인사이트"])
-        
-        with tab1:
-            fig = go.Figure()
-            fig.add_bar(x=ts_df['period_label'], y=ts_df['revenue'], name="전체 매출", marker_color='#2ca02c')
-            fig.add_scatter(x=ts_df['period_label'], y=ts_df['bulk_orders'], name="대량 주문수", yaxis="y2", line=dict(color='#FF4B4B'))
-            fig.update_layout(yaxis2=dict(overlaying="y", side="right"), template="plotly_white")
-            st.plotly_chart(fig, use_container_width=True)
+        st.subheader(f"📊 {time_unit} 매출 및 대량구매 추이")
+        fig = go.Figure()
+        fig.add_bar(x=ts_df['period_label'], y=ts_df['revenue'], name="전체 매출", marker_color='#2ca02c')
+        fig.add_scatter(x=ts_df['period_label'], y=ts_df['bulk_orders'], name="대량 주문수", yaxis="y2", line=dict(color='#FF4B4B'))
+        fig.update_layout(yaxis2=dict(overlaying="y", side="right"), template="plotly_white", hovermode="x unified")
+        st.plotly_chart(fig, use_container_width=True)
 
-        with tab2:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.info(f"**🔗 유입 및 매출 채널 TOP 3**\n* {', '.join(source_df['channel_group'].head(3).tolist())}")
-                if HAS_GEMINI:
-                    st.markdown("### 🤖 AI 분석 리포트")
-                    st.write(generate_deep_report(curr, prev, source_df))
-            with col2:
-                st.success(f"**💳 객단가 분석**\n* 현재 객단가: ₩{int(c_aov):,}\n* 전기 대비 변동: {get_delta(c_aov, p_aov)}")
 else:
     st.info("💡 사이드바에서 분석 기간을 선택해주세요.")
