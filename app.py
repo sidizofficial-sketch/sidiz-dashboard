@@ -32,13 +32,12 @@ def get_bq_client():
 client = get_bq_client()
 
 # -------------------------------
-# 3️⃣ 데이터 추출 함수 최적화
+# 3️⃣ 데이터 추출 함수
 # -------------------------------
 @st.cache_data(show_spinner=False)
 def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
     if client is None: return None, None, None
 
-    # 날짜 문자열
     s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
     s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
 
@@ -47,47 +46,54 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
     elif time_unit == "주별": group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), WEEK)"
     else: group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
-    # 핵심 지표 쿼리 (필요한 컬럼 + 필터만)
+    # 핵심 지표
     summary_query = f"""
     WITH base AS (
-        SELECT PARSE_DATE('%Y%m%d', event_date) as date,
-               user_pseudo_id, ecommerce.purchase_revenue,
-               (SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_id' LIMIT 1) as sid,
-               (SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_number' LIMIT 1) as s_num
+        SELECT 
+            PARSE_DATE('%Y%m%d', event_date) as date,
+            user_pseudo_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key='purchase_revenue' LIMIT 1) AS purchase_revenue,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_id' LIMIT 1) AS sid,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key='ga_session_number' LIMIT 1) AS s_num
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c,s_p)}' AND '{max(e_c,e_p)}'
           AND event_name='purchase'
     )
-    SELECT CASE WHEN date BETWEEN '{start_c}' AND '{end_c}' THEN 'Current' ELSE 'Previous' END as type,
-           COUNT(DISTINCT user_pseudo_id) as users,
-           COUNT(DISTINCT CASE WHEN s_num=1 THEN user_pseudo_id END) as new_users,
-           COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
-           COUNT(*) as orders,
-           SUM(IFNULL(purchase_revenue,0)) as revenue,
-           COUNTIF(purchase_revenue>=1500000) as bulk_orders,
-           SUM(CASE WHEN purchase_revenue>=1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue
+    SELECT 
+        CASE WHEN date BETWEEN '{start_c}' AND '{end_c}' THEN 'Current' ELSE 'Previous' END AS type,
+        COUNT(DISTINCT user_pseudo_id) AS users,
+        COUNT(DISTINCT CASE WHEN s_num=1 THEN user_pseudo_id END) AS new_users,
+        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) AS sessions,
+        COUNT(*) AS orders,
+        SUM(IFNULL(purchase_revenue,0)) AS revenue,
+        COUNTIF(purchase_revenue>=1500000) AS bulk_orders,
+        SUM(CASE WHEN purchase_revenue>=1500000 THEN purchase_revenue ELSE 0 END) AS bulk_revenue
     FROM base
     GROUP BY 1
     """
 
-    # 추이 데이터 (시간 단위)
+    # 시간 단위 매출 추이
     ts_query = f"""
-    SELECT CAST({group_sql} AS STRING) as period_label,
-           SUM(IFNULL(purchase_revenue,0)) as revenue,
-           COUNTIF(purchase_revenue>=1500000) as bulk_orders
+    SELECT CAST({group_sql} AS STRING) AS period_label,
+           SUM(IFNULL((SELECT value.int_value FROM UNNEST(event_params) WHERE key='purchase_revenue' LIMIT 1),0)) AS revenue,
+           COUNTIF((SELECT value.int_value FROM UNNEST(event_params) WHERE key='purchase_revenue' LIMIT 1) >=1500000) AS bulk_orders
     FROM `sidiz-458301.analytics_487246344.events_*`
     WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
       AND event_name='purchase'
-    GROUP BY 1 ORDER BY 1
+    GROUP BY 1
+    ORDER BY 1
     """
 
     # 상위 5개 유입 채널
     source_query = f"""
-    SELECT traffic_source.source, SUM(IFNULL(purchase_revenue,0)) as revenue
+    SELECT traffic_source.source,
+           SUM(IFNULL((SELECT value.int_value FROM UNNEST(event_params) WHERE key='purchase_revenue' LIMIT 1),0)) AS revenue
     FROM `sidiz-458301.analytics_487246344.events_*`
     WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
       AND event_name='purchase'
-    GROUP BY 1 ORDER BY revenue DESC LIMIT 5
+    GROUP BY 1
+    ORDER BY revenue DESC
+    LIMIT 5
     """
 
     try:
@@ -101,10 +107,11 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
         return None, None, None
 
 # -------------------------------
-# 4️⃣ AI 인사이트 (버튼 클릭)
+# 4️⃣ AI 인사이트
 # -------------------------------
 def generate_deep_report(curr, prev, source_df):
     if not HAS_GEMINI: return "🤖 AI API 설정이 필요합니다."
+
     rev_delta = ((curr['revenue']-prev['revenue'])/prev['revenue']*100) if prev['revenue']>0 else 0
     c_cr = (curr['orders']/curr['sessions']*100) if curr['sessions']>0 else 0
     c_bulk_share = (curr['bulk_revenue']/curr['revenue']*100) if curr['revenue']>0 else 0
