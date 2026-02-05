@@ -247,9 +247,9 @@ if len(curr_date) == 2 and len(comp_date) == 2:
             # 3. 주요 유입 채널 (소스/매체 기준)
             # source_df에 증감 로직이 포함되었다고 가정
             st.info(f"""
-            **🔗 유입 및 매출 채널 TOP 5**
-            * **매출 상위:** {', '.join(source_df['source'].head(3).tolist())}
-            * **특이사항:** 네이버 검색 유입 {(get_delta(10, 8))} 증가, 페이스북 광고 효율 저하 관리 필요
+            **🔗 유입 및 매출 채널 TOP 3**
+            * **매출 상위:** {', '.join(source_df['channel_group'].head(3).tolist())}
+            * **특이사항:** 채널별 매출 기여도 분석 결과 반영됨
             """)
 
         with col2:
