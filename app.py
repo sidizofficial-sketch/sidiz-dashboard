@@ -33,18 +33,23 @@ client = get_bq_client()
 def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
     if client is None: return None, None, None
     
+    # 날짜 포맷팅
     s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
     s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
 
+    # 추이 분석 단위 설정
     if time_unit == "일별": group_sql = "PARSE_DATE('%Y%m%d', event_date)"
     elif time_unit == "주별": group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), WEEK)"
     else: group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
+    # SQL ① & KPI 요약 쿼리 (페이지뷰, 회원가입 포함)
     query = f"""
     WITH base AS (
         SELECT 
             PARSE_DATE('%Y%m%d', event_date) as date,
-            user_pseudo_id, event_name, ecommerce.purchase_revenue,
+            user_pseudo_id, 
+            event_name, 
+            ecommerce.purchase_revenue,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num
         FROM `sidiz-458301.analytics_487246344.events_*`
@@ -52,16 +57,26 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
     )
     SELECT 
         CASE WHEN date BETWEEN '{start_c}' AND '{end_c}' THEN 'Current' ELSE 'Previous' END as type,
+        -- [유입 및 활동 지표]
         COUNT(DISTINCT user_pseudo_id) as users,
         COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
         COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
+        COUNTIF(event_name = 'page_view') as pageviews,
+        
+        -- [전환 지표: 회원가입 및 주문]
+        COUNTIF(event_name = 'sign_up') as sign_ups, 
         COUNTIF(event_name = 'purchase') as orders,
         SUM(IFNULL(purchase_revenue, 0)) as revenue,
+        
+        -- [대량 구매 세그먼트: 150만원 이상]
         COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
         SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue
-    FROM base GROUP BY 1 HAVING type IS NOT NULL
+    FROM base 
+    GROUP BY 1 
+    HAVING type IS NOT NULL
     """
 
+    # 매출 및 대량구매 추이 쿼리
     ts_query = f"""
     SELECT 
         CAST({group_sql} AS STRING) as period_label, 
@@ -72,15 +87,29 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
     GROUP BY 1 ORDER BY 1
     """
 
+    # SQL ③ 유입 소스 분류 (기획안의 CASE문을 적용하여 고도화 가능)
     source_query = f"""
-    SELECT traffic_source.source, SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue
+    SELECT 
+        CASE 
+            WHEN traffic_source.source = 'google' AND traffic_source.medium = 'cpc' THEN 'Google Ads'
+            WHEN traffic_source.source = 'naver' AND traffic_source.medium = 'cpc' THEN 'Naver Ads'
+            WHEN traffic_source.source = 'meta' THEN 'Meta Ads'
+            WHEN traffic_source.medium = 'organic' THEN 'Organic'
+            WHEN traffic_source.source LIKE '%ai%' THEN 'AI Referral'
+            ELSE 'Others'
+        END AS channel_group,
+        SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue
     FROM `sidiz-458301.analytics_487246344.events_*`
     WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-    GROUP BY 1 ORDER BY revenue DESC LIMIT 5
+    GROUP BY 1 ORDER BY revenue DESC
     """
 
     try:
-        return client.query(query).to_dataframe(), client.query(ts_query).to_dataframe(), client.query(source_query).to_dataframe()
+        return (
+            client.query(query).to_dataframe(), 
+            client.query(ts_query).to_dataframe(), 
+            client.query(source_query).to_dataframe()
+        )
     except Exception as e:
         st.error(f"⚠️ 쿼리 오류: {e}")
         return None, None, None
