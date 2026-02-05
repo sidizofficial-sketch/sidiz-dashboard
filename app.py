@@ -222,19 +222,5 @@ if len(curr_date) == 2 and len(comp_date) == 2:
             # 6. 고객 행동/퍼널 (예시 로직 - 실제 이탈률 데이터 연결 가능)
             st.success(f"**🛤️ 고객 행동/퍼널**\n\n평균 구매 수량 {(curr['orders']/curr['users'] if curr['users']>0 else 0):.1f}개, 결합 상품(쿠션, 발받침) 연계 판매 강화 필요")
 
-        # [차트 섹션]
-        st.markdown("---")
-        st.subheader(f"📊 {time_unit} 매출 추이 및 대량 주문 현황")
-        fig = go.Figure()
-        fig.add_bar(x=ts_df['period_label'], y=ts_df['revenue'], name="전체 매출", marker_color='#2ca02c')
-        fig.add_scatter(x=ts_df['period_label'], y=ts_df['bulk_orders'], name="대량 주문수", yaxis="y2", line=dict(color='#FF4B4B', width=3))
-        fig.update_layout(
-            yaxis2=dict(overlaying="y", side="right", title="대량 주문수 (건)"),
-            template="plotly_white", 
-            hovermode="x unified",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
 else:
     st.info("💡 사이드바에서 분석 기간을 선택해주세요.")
