@@ -57,19 +57,19 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
         WHERE event_name = 'purchase'
         GROUP BY transaction_id, item.item_id, item.item_category
     ),
-   -- EASY REPAIR만 구매한 주문 식별 (로직 강화)
+-- EASY REPAIR(소모품)만 구매한 주문 식별 (로직 대폭 강화)
     easy_repair_only_orders AS (
         SELECT transaction_id
         FROM base, UNNEST(items) as item
         WHERE event_name = 'purchase'
         GROUP BY transaction_id
         HAVING LOGICAL_AND(
-            -- 하이픈(-), 공백, 한글 등 모든 경우의 수를 포함
-            UPPER(item.item_category) LIKE '%EASY%REPAIR%' OR
-            UPPER(item.item_category2) LIKE '%EASY%REPAIR%' OR
-            UPPER(item.item_name) LIKE '%EASY%REPAIR%' OR
-            item.item_category LIKE '%이지리페어%' OR
-            item.item_name LIKE '%이지리페어%'
+            -- 1. 카테고리에 EASY REPAIR가 포함됨
+            REGEXP_CONTAINS(UPPER(IFNULL(item.item_category, '')), r'EASY.REPAIR') OR 
+            -- 2. 상품명에 EASY REPAIR가 포함됨
+            REGEXP_CONTAINS(UPPER(IFNULL(item.item_name, '')), r'EASY.REPAIR') OR
+            -- 3. 샘플에서 확인된 주요 소모품 키워드들 (필터링 핵심)
+            REGEXP_CONTAINS(item.item_name, r'패드|헤드레스트|커버|다리|바퀴|글라이드|블록|좌판|이지리페어')
         )
     )
     SELECT 
