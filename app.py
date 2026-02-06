@@ -250,13 +250,6 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     ORDER BY COALESCE(current_revenue, 0) DESC
     LIMIT 20
     """
-        COALESCE(previous_sessions, 0) as previous_sessions,
-        COALESCE(current_sessions, 0) - COALESCE(previous_sessions, 0) as sessions_change,
-        ROUND(SAFE_DIVIDE((COALESCE(current_sessions, 0) - COALESCE(previous_sessions, 0)) * 100, NULLIF(COALESCE(previous_sessions, 0), 0)), 1) as sessions_change_pct
-    FROM aggregated
-    ORDER BY ABS(COALESCE(current_revenue, 0) - COALESCE(previous_revenue, 0)) DESC
-    LIMIT 20
-    """
     # 지역별 변화
     demo_query = f"""
     WITH current_demo AS (
