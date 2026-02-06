@@ -110,14 +110,17 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
     st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
 
-    # 제품별 매출 변화 (제품명 기준 통합 + 공백/대소문자 정규화)
+    # 제품별 매출 변화 (제품명 기준 통합 + 정규화 + 세션/수량 추가)
     product_query = f"""
     WITH product_normalized AS (
         SELECT 
             UPPER(TRIM(REGEXP_REPLACE(item.item_name, r'\\s+', ' '))) as normalized_name,
             item.item_name as original_name,
             _TABLE_SUFFIX as suffix,
-            ecommerce.purchase_revenue
+            user_pseudo_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
+            ecommerce.purchase_revenue,
+            item.quantity
         FROM `sidiz-458301.analytics_487246344.events_*`,
         UNNEST(items) as item
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
@@ -143,7 +146,11 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         SELECT 
             normalized_name,
             SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN purchase_revenue ELSE 0 END) as current_revenue,
-            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN purchase_revenue ELSE 0 END) as previous_revenue
+            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN purchase_revenue ELSE 0 END) as previous_revenue,
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as current_sessions,
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as previous_sessions,
+            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN quantity ELSE 0 END) as current_quantity,
+            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN quantity ELSE 0 END) as previous_quantity
         FROM product_normalized
         GROUP BY normalized_name
     )
@@ -152,12 +159,16 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         COALESCE(a.current_revenue, 0) as current_revenue,
         COALESCE(a.previous_revenue, 0) as previous_revenue,
         COALESCE(a.current_revenue, 0) - COALESCE(a.previous_revenue, 0) as revenue_change,
-        ROUND(SAFE_DIVIDE((COALESCE(a.current_revenue, 0) - COALESCE(a.previous_revenue, 0)) * 100, NULLIF(COALESCE(a.previous_revenue, 0), 0)), 1) as change_pct
+        ROUND(SAFE_DIVIDE((COALESCE(a.current_revenue, 0) - COALESCE(a.previous_revenue, 0)) * 100, NULLIF(COALESCE(a.previous_revenue, 0), 0)), 1) as change_pct,
+        COALESCE(a.current_sessions, 0) as current_sessions,
+        COALESCE(a.previous_sessions, 0) as previous_sessions,
+        COALESCE(a.current_quantity, 0) as current_quantity,
+        COALESCE(a.previous_quantity, 0) as previous_quantity
     FROM aggregated a
     LEFT JOIN latest_names ln ON a.normalized_name = ln.normalized_name
     LEFT JOIN fallback_names fn ON a.normalized_name = fn.normalized_name
-    ORDER BY ABS(COALESCE(a.current_revenue, 0) - COALESCE(a.previous_revenue, 0)) DESC
-    LIMIT 10
+    ORDER BY COALESCE(a.current_revenue, 0) DESC
+    LIMIT 20
     """
 
     # 채널별 매출 & 세션 변화 (통합 쿼리 - 단일 소스)
@@ -387,7 +398,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
                 results[key][numeric_cols] = results[key][numeric_cols].fillna(0)
         
         # 컬럼명 정확히 매칭
-        results['product'].columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
+        results['product'].columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율', '현재세션', '이전세션', '현재수량', '이전수량']
         
         # 제품명 정규화 및 재집계 (중복 완전 제거)
         if 'product' in results and not results['product'].empty:
@@ -399,15 +410,25 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             pdf_agg = pdf.groupby('match_name').agg({
                 '제품명': 'first',      # 대표 이름 하나 선택
                 '현재매출': 'sum',
-                '이전매출': 'sum'
+                '이전매출': 'sum',
+                '현재세션': 'sum',
+                '이전세션': 'sum',
+                '현재수량': 'sum',
+                '이전수량': 'sum'
             }).reset_index(drop=True)
             
             # 3. 합산된 데이터를 바탕으로 변화량과 증감율 "재계산"
             pdf_agg['매출변화'] = pdf_agg['현재매출'] - pdf_agg['이전매출']
             pdf_agg['증감율'] = (pdf_agg['매출변화'] / pdf_agg['이전매출'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0)
+            pdf_agg['세션변화'] = pdf_agg['현재세션'] - pdf_agg['이전세션']
+            pdf_agg['수량변화'] = pdf_agg['현재수량'] - pdf_agg['이전수량']
             
-            # 4. 매출 변화 절대값 기준으로 재정렬 후 저장
-            results['product'] = pdf_agg.sort_values(by='매출변화', key=abs, ascending=False).reset_index(drop=True)
+            # 매출 비중 계산
+            total_revenue = pdf_agg['현재매출'].sum()
+            pdf_agg['매출비중'] = (pdf_agg['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
+            
+            # 4. 현재 매출 기준으로 정렬 후 저장
+            results['product'] = pdf_agg.sort_values(by='현재매출', ascending=False).reset_index(drop=True)
         
         results['channel_combined'].columns = ['채널', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
         results['demo'].columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
@@ -599,6 +620,44 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         b1.metric("대량 주문 건수", f"{int(curr['bulk_orders'])}건", f"{int(curr['bulk_orders'] - prev['bulk_orders']):+}건")
         b2.metric("대량 구매 매출", f"₩{int(curr['bulk_revenue']):,}", get_delta(curr['bulk_revenue'], prev['bulk_revenue']))
         b3.metric("대량 매출 비중", f"{(curr['bulk_revenue']/curr['revenue']*100 if curr['revenue']>0 else 0):.1f}%")
+        
+        # 대량 구매 상세 품목 (접기/펼치기)
+        with st.expander("🔍 대량 구매 품목별 상세 보기"):
+            bulk_detail_query = f"""
+            SELECT 
+                item.item_name as product_name,
+                COUNT(DISTINCT event_timestamp) as order_count,
+                SUM(item.quantity) as total_quantity,
+                SUM(item.price * item.quantity) as item_revenue
+            FROM `sidiz-458301.analytics_487246344.events_*`,
+            UNNEST(items) as item
+            WHERE _TABLE_SUFFIX BETWEEN '{start_current.strftime('%Y%m%d')}' AND '{end_current.strftime('%Y%m%d')}'
+            AND event_name = 'purchase'
+            AND ecommerce.purchase_revenue >= 1500000
+            GROUP BY item.item_name
+            ORDER BY item_revenue DESC
+            LIMIT 20
+            """
+            try:
+                bulk_detail = client.query(bulk_detail_query).to_dataframe()
+                if not bulk_detail.empty:
+                    bulk_detail.columns = ['제품명', '주문수', '수량', '매출액']
+                    bulk_detail['매출비중'] = (bulk_detail['매출액'] / bulk_detail['매출액'].sum() * 100).round(1)
+                    
+                    # 포맷팅
+                    display_bulk = bulk_detail.copy()
+                    display_bulk.insert(0, '순위', range(1, len(display_bulk) + 1))
+                    display_bulk['주문수'] = display_bulk['주문수'].apply(lambda x: f"{int(x)}건")
+                    display_bulk['수량'] = display_bulk['수량'].apply(lambda x: f"{int(x)}개")
+                    display_bulk['매출액'] = display_bulk['매출액'].apply(lambda x: f"₩{int(x):,}")
+                    display_bulk['매출비중'] = display_bulk['매출비중'].apply(lambda x: f"{x:.1f}%")
+                    
+                    st.dataframe(display_bulk, use_container_width=True, height=400)
+                else:
+                    st.info("대량 구매 품목 데이터가 없습니다.")
+            except Exception as e:
+                st.error(f"대량 구매 상세 조회 오류: {e}")
+
 
         # [개선된 매출 추이 차트]
         st.markdown("---")
@@ -723,63 +782,128 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                             # 가공을 위한 복사본 생성
                             display_df = insight_data['product'].copy()
                             
+                            # 순위 추가 (1부터 시작)
+                            display_df.insert(0, '순위', range(1, len(display_df) + 1))
+                            
                             # 표시용 포맷팅 (순서 중요: 계산이 모두 끝난 후 문자열로 변환)
                             display_df['현재매출'] = display_df['현재매출'].apply(format_currency)
                             display_df['이전매출'] = display_df['이전매출'].apply(format_currency)
                             display_df['매출변화'] = display_df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
                             display_df['증감율'] = display_df['증감율'].apply(lambda x: f"{x:+.1f}%")
+                            display_df['매출비중'] = display_df['매출비중'].apply(lambda x: f"{x:.1f}%")
+                            display_df['현재세션'] = display_df['현재세션'].apply(format_number)
+                            display_df['이전세션'] = display_df['이전세션'].apply(format_number)
+                            display_df['세션변화'] = display_df['세션변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_number(abs(x))}")
+                            display_df['현재수량'] = display_df['현재수량'].apply(lambda x: f"{int(x)}개")
+                            display_df['이전수량'] = display_df['이전수량'].apply(lambda x: f"{int(x)}개")
+                            display_df['수량변화'] = display_df['수량변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {int(abs(x))}개")
                             
-                            # 불필요한 보조 컬럼 제외하고 표시
-                            cols_to_show = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
-                            st.dataframe(display_df[cols_to_show], use_container_width=True, height=400)
+                            # 컬럼 선택 및 순서
+                            cols_to_show = ['순위', '제품명', '현재매출', '매출비중', '이전매출', '매출변화', '증감율', 
+                                          '현재세션', '이전세션', '세션변화', '현재수량', '이전수량', '수량변화']
+                            st.dataframe(display_df[cols_to_show], use_container_width=True, height=600)
                         else:
                             st.info("데이터가 없습니다.")
                     
                     with tab2:
-                        df = insight_data['channel_combined'].copy()
-                        
-                        # 포맷 적용
-                        df['현재매출'] = df['현재매출'].apply(format_currency)
-                        df['이전매출'] = df['이전매출'].apply(format_currency)
-                        df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
-                        df['매출증감율'] = df['매출증감율'].apply(format_percent)
-                        df['현재세션'] = df['현재세션'].apply(format_number)
-                        df['이전세션'] = df['이전세션'].apply(format_number)
-                        df['세션변화'] = df['세션변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_number(abs(x))}")
-                        df['세션증감율'] = df['세션증감율'].apply(format_percent)
-                        
-                        st.dataframe(df, use_container_width=True, height=400)
+                        if 'channel_combined' in insight_data and not insight_data['channel_combined'].empty:
+                            df = insight_data['channel_combined'].copy()
+                            
+                            # 매출 비중 계산
+                            total_revenue = df['현재매출'].sum()
+                            df['매출비중'] = (df['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
+                            
+                            # 순위 추가 (1부터 시작)
+                            df.insert(0, '순위', range(1, len(df) + 1))
+                            
+                            # 포맷 적용
+                            df['현재매출'] = df['현재매출'].apply(format_currency)
+                            df['이전매출'] = df['이전매출'].apply(format_currency)
+                            df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
+                            df['매출증감율'] = df['매출증감율'].apply(format_percent)
+                            df['매출비중'] = df['매출비중'].apply(lambda x: f"{x:.1f}%")
+                            df['현재세션'] = df['현재세션'].apply(format_number)
+                            df['이전세션'] = df['이전세션'].apply(format_number)
+                            df['세션변화'] = df['세션변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_number(abs(x))}")
+                            df['세션증감율'] = df['세션증감율'].apply(format_percent)
+                            
+                            cols_to_show = ['순위', '채널', '현재매출', '매출비중', '이전매출', '매출변화', '매출증감율',
+                                          '현재세션', '이전세션', '세션변화', '세션증감율']
+                            st.dataframe(df[cols_to_show], use_container_width=True, height=600)
+                        else:
+                            st.info("데이터가 없습니다.")
                     
                     with tab3:
-                        df = insight_data['demographics_combined'].copy()
-                        
-                        # 포맷 적용
-                        df['현재매출'] = df['현재매출'].apply(format_currency)
-                        df['이전매출'] = df['이전매출'].apply(format_currency)
-                        df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
-                        df['매출증감율'] = df['매출증감율'].apply(format_percent)
-                        df['현재세션'] = df['현재세션'].apply(format_number)
-                        df['이전세션'] = df['이전세션'].apply(format_number)
-                        df['세션변화'] = df['세션변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_number(abs(x))}")
-                        df['세션증감율'] = df['세션증감율'].apply(format_percent)
-                        
-                        st.dataframe(df, use_container_width=True, height=400)
+                        if 'demographics_combined' in insight_data and not insight_data['demographics_combined'].empty:
+                            df = insight_data['demographics_combined'].copy()
+                            
+                            # 매출 비중 계산
+                            total_revenue = df['현재매출'].sum()
+                            df['매출비중'] = (df['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
+                            
+                            # 순위 추가
+                            df.insert(0, '순위', range(1, len(df) + 1))
+                            
+                            # 포맷 적용
+                            df['현재매출'] = df['현재매출'].apply(format_currency)
+                            df['이전매출'] = df['이전매출'].apply(format_currency)
+                            df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
+                            df['매출증감율'] = df['매출증감율'].apply(format_percent)
+                            df['매출비중'] = df['매출비중'].apply(lambda x: f"{x:.1f}%")
+                            df['현재세션'] = df['현재세션'].apply(format_number)
+                            df['이전세션'] = df['이전세션'].apply(format_number)
+                            df['세션변화'] = df['세션변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_number(abs(x))}")
+                            df['세션증감율'] = df['세션증감율'].apply(format_percent)
+                            
+                            cols_to_show = ['순위', '인구통계', '현재매출', '매출비중', '이전매출', '매출변화', '매출증감율',
+                                          '현재세션', '이전세션', '세션변화', '세션증감율']
+                            st.dataframe(df[cols_to_show], use_container_width=True, height=600)
+                        else:
+                            st.info("데이터가 없습니다.")
                     
                     with tab4:
-                        df = insight_data['demo'].copy()
-                        df['현재매출'] = df['현재매출'].apply(format_currency)
-                        df['이전매출'] = df['이전매출'].apply(format_currency)
-                        df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
-                        df['증감율'] = df['증감율'].apply(format_percent)
-                        st.dataframe(df, use_container_width=True, height=400)
+                        if 'demo' in insight_data and not insight_data['demo'].empty:
+                            df = insight_data['demo'].copy()
+                            
+                            # 매출 비중 계산
+                            total_revenue = df['현재매출'].sum()
+                            df['매출비중'] = (df['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
+                            
+                            # 순위 추가
+                            df.insert(0, '순위', range(1, len(df) + 1))
+                            
+                            df['현재매출'] = df['현재매출'].apply(format_currency)
+                            df['이전매출'] = df['이전매출'].apply(format_currency)
+                            df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
+                            df['증감율'] = df['증감율'].apply(format_percent)
+                            df['매출비중'] = df['매출비중'].apply(lambda x: f"{x:.1f}%")
+                            
+                            cols_to_show = ['순위', '지역', '현재매출', '매출비중', '이전매출', '매출변화', '증감율']
+                            st.dataframe(df[cols_to_show], use_container_width=True, height=600)
+                        else:
+                            st.info("데이터가 없습니다.")
                     
                     with tab5:
-                        df = insight_data['device'].copy()
-                        df['현재매출'] = df['현재매출'].apply(format_currency)
-                        df['이전매출'] = df['이전매출'].apply(format_currency)
-                        df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
-                        df['증감율'] = df['증감율'].apply(format_percent)
-                        st.dataframe(df, use_container_width=True, height=400)
+                        if 'device' in insight_data and not insight_data['device'].empty:
+                            df = insight_data['device'].copy()
+                            
+                            # 매출 비중 계산
+                            total_revenue = df['현재매출'].sum()
+                            df['매출비중'] = (df['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
+                            
+                            # 순위 추가
+                            df.insert(0, '순위', range(1, len(df) + 1))
+                            
+                            df['현재매출'] = df['현재매출'].apply(format_currency)
+                            df['이전매출'] = df['이전매출'].apply(format_currency)
+                            df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
+                            df['증감율'] = df['증감율'].apply(format_percent)
+                            df['매출비중'] = df['매출비중'].apply(lambda x: f"{x:.1f}%")
+                            
+                            cols_to_show = ['순위', '디바이스', '현재매출', '매출비중', '이전매출', '매출변화', '증감율']
+                            st.dataframe(df[cols_to_show], use_container_width=True, height=600)
+                        else:
+                            st.info("데이터가 없습니다.")
 
 else:
     st.info("💡 사이드바에서 기간을 선택해주세요.")
