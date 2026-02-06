@@ -145,33 +145,41 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     demo_query = channel_query.replace("CONCAT(traffic_source.source, ' / ', traffic_source.medium)", "CONCAT(geo.country, ' / ', geo.city)")
     device_query = channel_query.replace("CONCAT(traffic_source.source, ' / ', traffic_source.medium)", "device.category")
 
-# 4. 인구통계 베이스 (루커 스튜디오 설정에 맞춰 u_gender, u_age로 수정)
+# 4. 인구통계 베이스 (필터링 완화 및 데이터 추출 로직 대폭 강화)
     demographics_base = f"""
     WITH raw_data AS (
         SELECT _TABLE_SUFFIX as suffix,
                IFNULL(ecommerce.purchase_revenue, 0) as rev,
                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as sid,
-               -- 루커 스튜디오와 동일한 파라미터명 사용
-               COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), 'Unknown') as g,
-               COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1), 'Unknown') as a
+               -- u_gender가 string이 아닐 경우를 대비해 COALESCE 중첩 사용
+               IFNULL(
+                 (SELECT COALESCE(value.string_value, CAST(value.int_value AS STRING), CAST(value.double_value AS STRING)) 
+                  FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), 
+                 'Unknown'
+               ) as g,
+               -- u_age가 string이 아닐 경우를 대비
+               IFNULL(
+                 (SELECT COALESCE(value.string_value, CAST(value.int_value AS STRING), CAST(value.double_value AS STRING)) 
+                  FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1), 
+                 'Unknown'
+               ) as a
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-          -- 구매 데이터가 이미 루커에 나오므로 purchase와 page_view를 모두 포함하여 데이터 확보
-          AND event_name IN ('purchase', 'page_view', 'common_dl')
+          -- 특정 이벤트에 국한하지 않고 모든 이벤트에서 유저 속성을 추출
     ),
     proc AS (
         SELECT suffix, rev, sid,
                CONCAT(
                    CASE 
-                       WHEN g IN ('male', 'M') THEN '남성' 
-                       WHEN g IN ('female', 'F') THEN '여성' 
-                       ELSE g 
+                       WHEN g IN ('male', 'M', '1') THEN '남성' 
+                       WHEN g IN ('female', 'F', '2') THEN '여성' 
+                       ELSE '기타/미분류' 
                    END, 
                    ' / ', 
-                   a
+                   CASE WHEN a IS NULL OR a = 'Unknown' THEN '연령미상' ELSE a END
                ) as d
         FROM raw_data 
-        WHERE g != 'Unknown' AND a != 'Unknown' -- 정보가 있는 데이터만 표시
+        -- WHERE 조건을 제거하여 '기타/미분류' 데이터라도 나오게 함
     )
     """
 
