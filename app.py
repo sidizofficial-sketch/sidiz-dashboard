@@ -251,11 +251,10 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     WITH current_demographics AS (
         SELECT 
             CONCAT(
-                CASE 
-                    WHEN user_properties.value.string_value = 'male' THEN '남성'
-                    WHEN user_properties.value.string_value = 'female' THEN '여성'
-                    ELSE '기타'
-                END,
+                COALESCE(
+                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'gender' LIMIT 1),
+                    'Unknown'
+                ),
                 ' / ',
                 COALESCE(
                     (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'age_group' LIMIT 1),
@@ -263,21 +262,18 @@ def get_insight_data(start_c, end_c, start_p, end_p):
                 )
             ) as demographic,
             SUM(ecommerce.purchase_revenue) as revenue
-        FROM `sidiz-458301.analytics_487246344.events_*`,
-        UNNEST(user_properties) as user_properties
+        FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
         AND event_name = 'purchase'
-        AND user_properties.key = 'gender'
         GROUP BY 1
     ),
     previous_demographics AS (
         SELECT 
             CONCAT(
-                CASE 
-                    WHEN user_properties.value.string_value = 'male' THEN '남성'
-                    WHEN user_properties.value.string_value = 'female' THEN '여성'
-                    ELSE '기타'
-                END,
+                COALESCE(
+                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'gender' LIMIT 1),
+                    'Unknown'
+                ),
                 ' / ',
                 COALESCE(
                     (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'age_group' LIMIT 1),
@@ -285,11 +281,9 @@ def get_insight_data(start_c, end_c, start_p, end_p):
                 )
             ) as demographic,
             SUM(ecommerce.purchase_revenue) as revenue
-        FROM `sidiz-458301.analytics_487246344.events_*`,
-        UNNEST(user_properties) as user_properties
+        FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
         AND event_name = 'purchase'
-        AND user_properties.key = 'gender'
         GROUP BY 1
     )
     SELECT 
@@ -300,6 +294,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
     FROM current_demographics c
     FULL OUTER JOIN previous_demographics p ON c.demographic = p.demographic
+    WHERE COALESCE(c.demographic, p.demographic) != 'Unknown / Unknown'
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
     LIMIT 10
     """
@@ -345,11 +340,10 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     WITH current_demographics AS (
         SELECT 
             CONCAT(
-                CASE 
-                    WHEN user_properties.value.string_value = 'male' THEN '남성'
-                    WHEN user_properties.value.string_value = 'female' THEN '여성'
-                    ELSE '기타'
-                END,
+                COALESCE(
+                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'gender' LIMIT 1),
+                    'Unknown'
+                ),
                 ' / ',
                 COALESCE(
                     (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'age_group' LIMIT 1),
@@ -360,20 +354,17 @@ def get_insight_data(start_c, end_c, start_p, end_p):
                 user_pseudo_id, 
                 CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)
             )) as sessions
-        FROM `sidiz-458301.analytics_487246344.events_*`,
-        UNNEST(user_properties) as user_properties
+        FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-        AND user_properties.key = 'gender'
         GROUP BY 1
     ),
     previous_demographics AS (
         SELECT 
             CONCAT(
-                CASE 
-                    WHEN user_properties.value.string_value = 'male' THEN '남성'
-                    WHEN user_properties.value.string_value = 'female' THEN '여성'
-                    ELSE '기타'
-                END,
+                COALESCE(
+                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'gender' LIMIT 1),
+                    'Unknown'
+                ),
                 ' / ',
                 COALESCE(
                     (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'age_group' LIMIT 1),
@@ -384,10 +375,8 @@ def get_insight_data(start_c, end_c, start_p, end_p):
                 user_pseudo_id, 
                 CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)
             )) as sessions
-        FROM `sidiz-458301.analytics_487246344.events_*`,
-        UNNEST(user_properties) as user_properties
+        FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
-        AND user_properties.key = 'gender'
         GROUP BY 1
     )
     SELECT 
@@ -398,6 +387,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         ROUND(SAFE_DIVIDE((IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) * 100, IFNULL(p.sessions, 0)), 1) as change_pct
     FROM current_demographics c
     FULL OUTER JOIN previous_demographics p ON c.demographic = p.demographic
+    WHERE COALESCE(c.demographic, p.demographic) != 'Unknown / Unknown'
     ORDER BY ABS(IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) DESC
     LIMIT 10
     """
