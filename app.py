@@ -135,23 +135,39 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     # 채널별 매출 변화
     channel_query = f"""
     WITH current_channels AS (
-        SELECT CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel, SUM(ecommerce.purchase_revenue) as revenue 
+        SELECT 
+            CONCAT(
+                COALESCE(NULLIF(traffic_source.source, ''), '(direct)'), 
+                ' / ', 
+                COALESCE(NULLIF(traffic_source.medium, ''), '(none)')
+            ) as channel, 
+            SUM(ecommerce.purchase_revenue) as revenue 
         FROM `sidiz-458301.analytics_487246344.events_*` 
-        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' 
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' 
+        AND event_name = 'purchase'
+        AND ecommerce.purchase_revenue > 0
         GROUP BY 1
     ),
     previous_channels AS (
-        SELECT CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel, SUM(ecommerce.purchase_revenue) as revenue 
+        SELECT 
+            CONCAT(
+                COALESCE(NULLIF(traffic_source.source, ''), '(direct)'), 
+                ' / ', 
+                COALESCE(NULLIF(traffic_source.medium, ''), '(none)')
+            ) as channel, 
+            SUM(ecommerce.purchase_revenue) as revenue 
         FROM `sidiz-458301.analytics_487246344.events_*` 
-        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' 
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' 
+        AND event_name = 'purchase'
+        AND ecommerce.purchase_revenue > 0
         GROUP BY 1
     )
     SELECT 
-        COALESCE(c.channel, p.channel), 
-        IFNULL(c.revenue, 0), 
-        IFNULL(p.revenue, 0), 
-        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0), 
-        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1)
+        COALESCE(c.channel, p.channel) as channel_name, 
+        IFNULL(c.revenue, 0) as current_revenue, 
+        IFNULL(p.revenue, 0) as previous_revenue, 
+        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change, 
+        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
     FROM current_channels c 
     FULL OUTER JOIN previous_channels p ON c.channel = p.channel 
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC 
@@ -161,25 +177,35 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     # 채널별 세션 변화
     channel_sessions_query = f"""
     WITH current_sessions AS (
-        SELECT CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel, 
-        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions 
+        SELECT 
+            CONCAT(
+                COALESCE(NULLIF(traffic_source.source, ''), '(direct)'), 
+                ' / ', 
+                COALESCE(NULLIF(traffic_source.medium, ''), '(none)')
+            ) as channel, 
+            COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions 
         FROM `sidiz-458301.analytics_487246344.events_*` 
         WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' 
         GROUP BY 1
     ),
     previous_sessions AS (
-        SELECT CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel, 
-        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions 
+        SELECT 
+            CONCAT(
+                COALESCE(NULLIF(traffic_source.source, ''), '(direct)'), 
+                ' / ', 
+                COALESCE(NULLIF(traffic_source.medium, ''), '(none)')
+            ) as channel, 
+            COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions 
         FROM `sidiz-458301.analytics_487246344.events_*` 
         WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' 
         GROUP BY 1
     )
     SELECT 
-        COALESCE(c.channel, p.channel), 
-        IFNULL(c.sessions, 0), 
-        IFNULL(p.sessions, 0), 
-        IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0), 
-        ROUND(SAFE_DIVIDE((IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) * 100, IFNULL(p.sessions, 0)), 1)
+        COALESCE(c.channel, p.channel) as channel_name, 
+        IFNULL(c.sessions, 0) as current_sessions, 
+        IFNULL(p.sessions, 0) as previous_sessions, 
+        IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0) as sessions_change, 
+        ROUND(SAFE_DIVIDE((IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) * 100, IFNULL(p.sessions, 0)), 1) as change_pct
     FROM current_sessions c 
     FULL OUTER JOIN previous_sessions p ON c.channel = p.channel 
     ORDER BY ABS(IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) DESC 
