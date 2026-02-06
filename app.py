@@ -631,7 +631,7 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                 SUM(item.price * item.quantity) as item_revenue
             FROM `sidiz-458301.analytics_487246344.events_*`,
             UNNEST(items) as item
-            WHERE _TABLE_SUFFIX BETWEEN '{start_current.strftime('%Y%m%d')}' AND '{end_current.strftime('%Y%m%d')}'
+            WHERE _TABLE_SUFFIX BETWEEN '{curr_date[0].strftime('%Y%m%d')}' AND '{curr_date[1].strftime('%Y%m%d')}'
             AND event_name = 'purchase'
             AND ecommerce.purchase_revenue >= 1500000
             GROUP BY item.item_name
