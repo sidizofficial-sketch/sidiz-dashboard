@@ -292,7 +292,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     FROM proc GROUP BY 1 ORDER BY 4 DESC LIMIT 10
     """
 
-demographics_sessions_query = demographics_base + f"""
+    demographics_sessions_query = demographics_base + f"""
     SELECT 
         d, 
         COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN sid END) as curr,
