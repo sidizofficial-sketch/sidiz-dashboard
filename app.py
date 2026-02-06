@@ -117,150 +117,286 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
     s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
     
-    # 1. 제품별 매출 변화 쿼리
+    # 제품별 매출 변화 (TOP3)
     product_query = f"""
     WITH current_products AS (
-        SELECT item.item_name as product, SUM(ecommerce.purchase_revenue) as revenue
-        FROM `sidiz-458301.analytics_487246344.events_*`, UNNEST(items) as item
-        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase'
+        SELECT 
+            item.item_name as product,
+            SUM(ecommerce.purchase_revenue) as revenue
+        FROM `sidiz-458301.analytics_487246344.events_*`,
+        UNNEST(items) as item
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        AND event_name = 'purchase'
         GROUP BY 1
     ),
     previous_products AS (
-        SELECT item.item_name as product, SUM(ecommerce.purchase_revenue) as revenue
-        FROM `sidiz-458301.analytics_487246344.events_*`, UNNEST(items) as item
-        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase'
+        SELECT 
+            item.item_name as product,
+            SUM(ecommerce.purchase_revenue) as revenue
+        FROM `sidiz-458301.analytics_487246344.events_*`,
+        UNNEST(items) as item
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
+        AND event_name = 'purchase'
         GROUP BY 1
     )
-    SELECT COALESCE(c.product, p.product) as product_name, IFNULL(c.revenue, 0) as current_revenue,
-           IFNULL(p.revenue, 0) as previous_revenue, IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
-           ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
-    FROM current_products c FULL OUTER JOIN previous_products p ON c.product = p.product
-    ORDER BY ABS(revenue_change) DESC LIMIT 10
+    SELECT 
+        COALESCE(c.product, p.product) as product_name,
+        IFNULL(c.revenue, 0) as current_revenue,
+        IFNULL(p.revenue, 0) as previous_revenue,
+        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
+    FROM current_products c
+    FULL OUTER JOIN previous_products p ON c.product = p.product
+    ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
+    LIMIT 10
     """
-
-    # 2. 채널별 매출 변화 쿼리
+    
+    # 채널별 매출 변화 (TOP3)
     channel_query = f"""
     WITH current_channels AS (
-        SELECT CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel, SUM(ecommerce.purchase_revenue) as revenue
+        SELECT 
+            CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel,
+            SUM(ecommerce.purchase_revenue) as revenue
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase'
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        AND event_name = 'purchase'
         GROUP BY 1
     ),
     previous_channels AS (
-        SELECT CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel, SUM(ecommerce.purchase_revenue) as revenue
+        SELECT 
+            CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel,
+            SUM(ecommerce.purchase_revenue) as revenue
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase'
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
+        AND event_name = 'purchase'
         GROUP BY 1
     )
-    SELECT COALESCE(c.channel, p.channel) as channel_name, IFNULL(c.revenue, 0) as current_revenue,
-           IFNULL(p.revenue, 0) as previous_revenue, IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
-           ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
-    FROM current_channels c FULL OUTER JOIN previous_channels p ON c.channel = p.channel
-    ORDER BY ABS(revenue_change) DESC LIMIT 10
+    SELECT 
+        COALESCE(c.channel, p.channel) as channel_name,
+        IFNULL(c.revenue, 0) as current_revenue,
+        IFNULL(p.revenue, 0) as previous_revenue,
+        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
+    FROM current_channels c
+    FULL OUTER JOIN previous_channels p ON c.channel = p.channel
+    ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
+    LIMIT 10
     """
-
-    # 2-1. 채널별 세션 변화 쿼리 (누락분 추가)
-    channel_sessions_query = f"""
-    SELECT CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel,
-           COUNT(DISTINCT CASE WHEN _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' THEN CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS STRING)) END) as current_sessions,
-           COUNT(DISTINCT CASE WHEN _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') AS STRING)) END) as previous_sessions,
-           0 as sessions_change, 0 as change_pct
-    FROM `sidiz-458301.analytics_487246344.events_*`
-    WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-    GROUP BY 1 LIMIT 10
-    """
-
-    # 3. 지역별 변화 쿼리
+    
+    # 지역별 변화
     demo_query = f"""
     WITH current_demo AS (
-        SELECT CONCAT(IFNULL(geo.country, 'Unknown'), ' / ', IFNULL(geo.city, 'Unknown')) as location, SUM(ecommerce.purchase_revenue) as revenue
+        SELECT 
+            CONCAT(IFNULL(geo.country, 'Unknown'), ' / ', IFNULL(geo.city, 'Unknown')) as location,
+            SUM(ecommerce.purchase_revenue) as revenue
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase'
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        AND event_name = 'purchase'
         GROUP BY 1
     ),
     previous_demo AS (
-        SELECT CONCAT(IFNULL(geo.country, 'Unknown'), ' / ', IFNULL(geo.city, 'Unknown')) as location, SUM(ecommerce.purchase_revenue) as revenue
+        SELECT 
+            CONCAT(IFNULL(geo.country, 'Unknown'), ' / ', IFNULL(geo.city, 'Unknown')) as location,
+            SUM(ecommerce.purchase_revenue) as revenue
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase'
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
+        AND event_name = 'purchase'
         GROUP BY 1
     )
-    SELECT COALESCE(c.location, p.location) as location_name, IFNULL(c.revenue, 0) as current_revenue,
-           IFNULL(p.revenue, 0) as previous_revenue, IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
-           ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
-    FROM current_demo c FULL OUTER JOIN previous_demo p ON c.location = p.location
-    ORDER BY ABS(revenue_change) DESC LIMIT 10
+    SELECT 
+        COALESCE(c.location, p.location) as location_name,
+        IFNULL(c.revenue, 0) as current_revenue,
+        IFNULL(p.revenue, 0) as previous_revenue,
+        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
+    FROM current_demo c
+    FULL OUTER JOIN previous_demo p ON c.location = p.location
+    ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
+    LIMIT 10
     """
-
-    # 4. 디바이스별 변화 쿼리
+    
+    # 디바이스별 변화
     device_query = f"""
     WITH current_device AS (
-        SELECT device.category as device, SUM(ecommerce.purchase_revenue) as revenue
+        SELECT 
+            device.category as device,
+            SUM(ecommerce.purchase_revenue) as revenue
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase'
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        AND event_name = 'purchase'
         GROUP BY 1
     ),
     previous_device AS (
-        SELECT device.category as device, SUM(ecommerce.purchase_revenue) as revenue
+        SELECT 
+            device.category as device,
+            SUM(ecommerce.purchase_revenue) as revenue
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase'
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
+        AND event_name = 'purchase'
         GROUP BY 1
     )
-    SELECT COALESCE(c.device, p.device) as device_name, IFNULL(c.revenue, 0) as current_revenue,
-           IFNULL(p.revenue, 0) as previous_revenue, IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
-           ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
-    FROM current_device c FULL OUTER JOIN previous_device p ON c.device = p.device
-    ORDER BY ABS(revenue_change) DESC
+    SELECT 
+        COALESCE(c.device, p.device) as device_name,
+        IFNULL(c.revenue, 0) as current_revenue,
+        IFNULL(p.revenue, 0) as previous_revenue,
+        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
+    FROM current_device c
+    FULL OUTER JOIN previous_device p ON c.device = p.device
+    ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
     """
-
-    # 5. 인구통계별 매출 쿼리 (common_dl 반영)
+    
+    # 인구통계별 매출 변화 (성별&연령 조합)
     demographics_query = f"""
-    WITH raw_purchase AS (
-        SELECT _TABLE_SUFFIX as suffix, ecommerce.purchase_revenue,
-               COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'gender'), 'Unknown') as gender_raw,
-               COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'age'), 'Unknown') as age_raw
+    WITH current_demographics AS (
+        SELECT 
+            CONCAT(
+                CASE 
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'male' THEN '남성'
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'female' THEN '여성'
+                    ELSE COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), 'Unknown')
+                END,
+                ' / ',
+                COALESCE(
+                    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1),
+                    'Unknown'
+                )
+            ) as demographic,
+            SUM(ecommerce.purchase_revenue) as revenue
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}' AND event_name = 'common_dl' 
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        AND event_name = 'purchase'
+        GROUP BY 1
     ),
-    processed_data AS (
-        SELECT suffix, purchase_revenue,
-               CONCAT(CASE WHEN gender_raw IN ('male', 'M') THEN '남성' WHEN gender_raw IN ('female', 'F') THEN '여성' ELSE gender_raw END, ' / ', age_raw) as demographic
-        FROM raw_purchase
-        WHERE gender_raw != 'Unknown' OR age_raw != 'Unknown'
+    previous_demographics AS (
+        SELECT 
+            CONCAT(
+                CASE 
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'male' THEN '남성'
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'female' THEN '여성'
+                    ELSE COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), 'Unknown')
+                END,
+                ' / ',
+                COALESCE(
+                    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1),
+                    'Unknown'
+                )
+            ) as demographic,
+            SUM(ecommerce.purchase_revenue) as revenue
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
+        AND event_name = 'purchase'
+        GROUP BY 1
     )
-    SELECT demographic as demographic_name,
-           SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN purchase_revenue ELSE 0 END) as current_revenue,
-           SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN purchase_revenue ELSE 0 END) as previous_revenue,
-           SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN purchase_revenue ELSE 0 END) - SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN purchase_revenue ELSE 0 END) as revenue_change,
-           ROUND(SAFE_DIVIDE((SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN purchase_revenue ELSE 0 END) - SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN purchase_revenue ELSE 0 END)) * 100, SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN purchase_revenue ELSE 0 END)), 1) as change_pct
-    FROM processed_data GROUP BY 1 ORDER BY ABS(revenue_change) DESC LIMIT 10
+    SELECT 
+        COALESCE(c.demographic, p.demographic) as demographic_name,
+        IFNULL(c.revenue, 0) as current_revenue,
+        IFNULL(p.revenue, 0) as previous_revenue,
+        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
+    FROM current_demographics c
+    FULL OUTER JOIN previous_demographics p ON c.demographic = p.demographic
+    WHERE COALESCE(c.demographic, p.demographic) NOT IN ('Unknown / Unknown', 'null / Unknown', 'Unknown / null')
+    ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
+    LIMIT 10
     """
-
-    # 6. 인구통계별 세션 쿼리 (common_dl 반영)
+    
+    # 채널별 유입(세션) 변화
+    channel_sessions_query = f"""
+    WITH current_channels AS (
+        SELECT 
+            CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel,
+            COUNT(DISTINCT CONCAT(
+                user_pseudo_id, 
+                CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)
+            )) as sessions
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        GROUP BY 1
+    ),
+    previous_channels AS (
+        SELECT 
+            CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel,
+            COUNT(DISTINCT CONCAT(
+                user_pseudo_id, 
+                CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)
+            )) as sessions
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
+        GROUP BY 1
+    )
+    SELECT 
+        COALESCE(c.channel, p.channel) as channel_name,
+        IFNULL(c.sessions, 0) as current_sessions,
+        IFNULL(p.sessions, 0) as previous_sessions,
+        IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0) as sessions_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) * 100, IFNULL(p.sessions, 0)), 1) as change_pct
+    FROM current_channels c
+    FULL OUTER JOIN previous_channels p ON c.channel = p.channel
+    ORDER BY ABS(IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) DESC
+    LIMIT 10
+    """
+    
+    # 인구통계별 유입(세션) 변화
     demographics_sessions_query = f"""
-    WITH raw_sessions AS (
-        SELECT _TABLE_SUFFIX as suffix, user_pseudo_id,
-               (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') as sid,
-               COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'gender'), 'Unknown') as gender_raw,
-               COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'age'), 'Unknown') as age_raw
+    WITH current_demographics AS (
+        SELECT 
+            CONCAT(
+                CASE 
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'male' THEN '남성'
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'female' THEN '여성'
+                    ELSE COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), 'Unknown')
+                END,
+                ' / ',
+                COALESCE(
+                    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1),
+                    'Unknown'
+                )
+            ) as demographic,
+            COUNT(DISTINCT CONCAT(
+                user_pseudo_id, 
+                CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)
+            )) as sessions
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}' AND event_name = 'common_dl'
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        GROUP BY 1
     ),
-    processed_sessions AS (
-        SELECT suffix, CONCAT(user_pseudo_id, CAST(sid AS STRING)) as session_id,
-               CONCAT(CASE WHEN gender_raw IN ('male', 'M') THEN '남성' WHEN gender_raw IN ('female', 'F') THEN '여성' ELSE gender_raw END, ' / ', age_raw) as demographic
-        FROM raw_sessions
-        WHERE gender_raw != 'Unknown' OR age_raw != 'Unknown'
+    previous_demographics AS (
+        SELECT 
+            CONCAT(
+                CASE 
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'male' THEN '남성'
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'female' THEN '여성'
+                    ELSE COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), 'Unknown')
+                END,
+                ' / ',
+                COALESCE(
+                    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1),
+                    'Unknown'
+                )
+            ) as demographic,
+            COUNT(DISTINCT CONCAT(
+                user_pseudo_id, 
+                CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)
+            )) as sessions
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
+        GROUP BY 1
     )
-    SELECT demographic as demographic_name,
-           COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN session_id END) as current_sessions,
-           COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN session_id END) as previous_sessions,
-           COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN session_id END) - COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN session_id END) as sessions_change,
-           ROUND(SAFE_DIVIDE((COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN session_id END) - COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN session_id END)) * 100, COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN session_id END)), 1) as change_pct
-    FROM processed_sessions GROUP BY 1 ORDER BY ABS(sessions_change) DESC LIMIT 10
+    SELECT 
+        COALESCE(c.demographic, p.demographic) as demographic_name,
+        IFNULL(c.sessions, 0) as current_sessions,
+        IFNULL(p.sessions, 0) as previous_sessions,
+        IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0) as sessions_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) * 100, IFNULL(p.sessions, 0)), 1) as change_pct
+    FROM current_demographics c
+    FULL OUTER JOIN previous_demographics p ON c.demographic = p.demographic
+    WHERE COALESCE(c.demographic, p.demographic) NOT IN ('Unknown / Unknown', 'null / Unknown', 'Unknown / null')
+    ORDER BY ABS(IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) DESC
+    LIMIT 10
     """
-
+    
     try:
-        # 쿼리 실행
         product_df = client.query(product_query).to_dataframe()
         channel_df = client.query(channel_query).to_dataframe()
         demo_df = client.query(demo_query).to_dataframe()
@@ -268,8 +404,8 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         demographics_df = client.query(demographics_query).to_dataframe()
         channel_sessions_df = client.query(channel_sessions_query).to_dataframe()
         demographics_sessions_df = client.query(demographics_sessions_query).to_dataframe()
-
-        # 컬럼명 통일
+        
+        # 컬럼명을 한글로 변경 (쿼리 후)
         product_df.columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
         channel_df.columns = ['채널', '현재매출', '이전매출', '매출변화', '증감율']
         demo_df.columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
