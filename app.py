@@ -57,12 +57,20 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
         WHERE event_name = 'purchase'
         GROUP BY transaction_id, item.item_id, item.item_category
     ),
+   -- EASY REPAIR만 구매한 주문 식별 (로직 강화)
     easy_repair_only_orders AS (
-        SELECT DISTINCT transaction_id
-        FROM easy_repair_check
+        SELECT transaction_id
+        FROM base, UNNEST(items) as item
+        WHERE event_name = 'purchase'
         GROUP BY transaction_id
-        -- 모든 아이템이 EASY REPAIR인 주문만
-        HAVING LOGICAL_AND(is_easy_repair)
+        HAVING LOGICAL_AND(
+            -- 하이픈(-), 공백, 한글 등 모든 경우의 수를 포함
+            UPPER(item.item_category) LIKE '%EASY%REPAIR%' OR
+            UPPER(item.item_category2) LIKE '%EASY%REPAIR%' OR
+            UPPER(item.item_name) LIKE '%EASY%REPAIR%' OR
+            item.item_category LIKE '%이지리페어%' OR
+            item.item_name LIKE '%이지리페어%'
+        )
     )
     SELECT 
         CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
