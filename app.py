@@ -45,14 +45,20 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
     ),
-    -- EASY REPAIR만 구매한 주문 식별
+    -- EASY REPAIR만 구매한 주문 식별 (모든 카테고리 필드 확인)
     easy_repair_only_orders AS (
         SELECT DISTINCT transaction_id
         FROM base,
         UNNEST(items) as item
         WHERE event_name = 'purchase'
         GROUP BY transaction_id
-        HAVING LOGICAL_AND(item.item_category LIKE '%EASY REPAIR%')
+        HAVING LOGICAL_AND(
+            item.item_category LIKE '%EASY REPAIR%' OR
+            item.item_category2 LIKE '%EASY REPAIR%' OR
+            item.item_category3 LIKE '%EASY REPAIR%' OR
+            item.item_category4 LIKE '%EASY REPAIR%' OR
+            item.item_category5 LIKE '%EASY REPAIR%'
+        )
     )
     SELECT 
         CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
@@ -122,11 +128,11 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         GROUP BY 1
     )
     SELECT 
-        COALESCE(c.product, p.product) as 제품명,
-        IFNULL(c.revenue, 0) as 현재매출,
-        IFNULL(p.revenue, 0) as 이전매출,
-        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as 매출변화,
-        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as 증감율
+        COALESCE(c.product, p.product) as product_name,
+        IFNULL(c.revenue, 0) as current_revenue,
+        IFNULL(p.revenue, 0) as previous_revenue,
+        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
     FROM current_products c
     FULL OUTER JOIN previous_products p ON c.product = p.product
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
@@ -154,11 +160,11 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         GROUP BY 1
     )
     SELECT 
-        COALESCE(c.channel, p.channel) as 채널,
-        IFNULL(c.revenue, 0) as 현재매출,
-        IFNULL(p.revenue, 0) as 이전매출,
-        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as 매출변화,
-        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as 증감율
+        COALESCE(c.channel, p.channel) as channel_name,
+        IFNULL(c.revenue, 0) as current_revenue,
+        IFNULL(p.revenue, 0) as previous_revenue,
+        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
     FROM current_channels c
     FULL OUTER JOIN previous_channels p ON c.channel = p.channel
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
@@ -169,7 +175,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     demo_query = f"""
     WITH current_demo AS (
         SELECT 
-            CONCAT(IFNULL(geo.country, '알 수 없음'), ' / ', IFNULL(geo.city, '알 수 없음')) as location,
+            CONCAT(IFNULL(geo.country, 'Unknown'), ' / ', IFNULL(geo.city, 'Unknown')) as location,
             SUM(ecommerce.purchase_revenue) as revenue
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
@@ -178,7 +184,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     ),
     previous_demo AS (
         SELECT 
-            CONCAT(IFNULL(geo.country, '알 수 없음'), ' / ', IFNULL(geo.city, '알 수 없음')) as location,
+            CONCAT(IFNULL(geo.country, 'Unknown'), ' / ', IFNULL(geo.city, 'Unknown')) as location,
             SUM(ecommerce.purchase_revenue) as revenue
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
@@ -186,11 +192,11 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         GROUP BY 1
     )
     SELECT 
-        COALESCE(c.location, p.location) as 지역,
-        IFNULL(c.revenue, 0) as 현재매출,
-        IFNULL(p.revenue, 0) as 이전매출,
-        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as 매출변화,
-        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as 증감율
+        COALESCE(c.location, p.location) as location_name,
+        IFNULL(c.revenue, 0) as current_revenue,
+        IFNULL(p.revenue, 0) as previous_revenue,
+        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
     FROM current_demo c
     FULL OUTER JOIN previous_demo p ON c.location = p.location
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
@@ -218,22 +224,33 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         GROUP BY 1
     )
     SELECT 
-        COALESCE(c.device, p.device) as 디바이스,
-        IFNULL(c.revenue, 0) as 현재매출,
-        IFNULL(p.revenue, 0) as 이전매출,
-        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as 매출변화,
-        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as 증감율
+        COALESCE(c.device, p.device) as device_name,
+        IFNULL(c.revenue, 0) as current_revenue,
+        IFNULL(p.revenue, 0) as previous_revenue,
+        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
     FROM current_device c
     FULL OUTER JOIN previous_device p ON c.device = p.device
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
     """
     
     try:
+        product_df = client.query(product_query).to_dataframe()
+        channel_df = client.query(channel_query).to_dataframe()
+        demo_df = client.query(demo_query).to_dataframe()
+        device_df = client.query(device_query).to_dataframe()
+        
+        # 컬럼명을 한글로 변경 (쿼리 후)
+        product_df.columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
+        channel_df.columns = ['채널', '현재매출', '이전매출', '매출변화', '증감율']
+        demo_df.columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
+        device_df.columns = ['디바이스', '현재매출', '이전매출', '매출변화', '증감율']
+        
         return {
-            'product': client.query(product_query).to_dataframe(),
-            'channel': client.query(channel_query).to_dataframe(),
-            'demo': client.query(demo_query).to_dataframe(),
-            'device': client.query(device_query).to_dataframe()
+            'product': product_df,
+            'channel': channel_df,
+            'demo': demo_df,
+            'device': device_df
         }
     except Exception as e:
         st.error(f"⚠️ 인사이트 데이터 오류: {e}")
@@ -350,10 +367,18 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         cols[3].metric("평균 객단가", f"₩{int(c_aov):,}", get_delta(c_aov, p_aov))
         
         # EASY REPAIR만 구매한 주문 제외 객단가
-        c_filtered_aov = (curr['filtered_revenue']/curr['filtered_orders']) if curr['filtered_orders'] > 0 else 0
-        p_filtered_aov = (prev['filtered_revenue']/prev['filtered_orders']) if prev['filtered_orders'] > 0 else 0
-        cols[4].metric("필터링 객단가", f"₩{int(c_filtered_aov):,}", get_delta(c_filtered_aov, p_filtered_aov), 
-                      help="EASY REPAIR만 구매한 주문 제외")
+        c_filtered_aov = (curr['filtered_revenue']/curr['filtered_orders']) if curr.get('filtered_orders', 0) > 0 else 0
+        p_filtered_aov = (prev['filtered_revenue']/prev['filtered_orders']) if prev.get('filtered_orders', 0) > 0 else 0
+        
+        # 디버깅: 실제 값 확인
+        # st.write(f"DEBUG - 현재: filtered_revenue={curr.get('filtered_revenue', 0):,.0f}, filtered_orders={curr.get('filtered_orders', 0)}")
+        # st.write(f"DEBUG - 이전: filtered_revenue={prev.get('filtered_revenue', 0):,.0f}, filtered_orders={prev.get('filtered_orders', 0)}")
+        
+        if c_filtered_aov > 0:
+            cols[4].metric("필터링 객단가", f"₩{int(c_filtered_aov):,}", get_delta(c_filtered_aov, p_filtered_aov), 
+                          help="EASY REPAIR만 구매한 주문 제외")
+        else:
+            cols[4].metric("필터링 객단가", "데이터 없음", help="EASY REPAIR만 구매한 주문 제외")
 
         # [대량 구매]
         st.markdown("---")
