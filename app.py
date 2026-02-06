@@ -136,118 +136,27 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     LIMIT 10
     """
 
-    # 채널별 매출 변화 (collected_traffic_source 우선 + 세션 기반 + 원본 대소문자 유지)
-    channel_query = f"""
-    WITH session_sources AS (
-        SELECT 
-            user_pseudo_id,
-            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
-            -- collected_traffic_source를 최우선으로 사용 (원본 대소문자 유지)
-            COALESCE(
-                NULLIF(TRIM(collected_traffic_source.manual_source), ''),
-                NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)), ''),
-                NULLIF(TRIM(traffic_source.source), ''),
-                '(direct)'
-            ) as source,
-            COALESCE(
-                NULLIF(TRIM(collected_traffic_source.manual_medium), ''),
-                NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1)), ''),
-                NULLIF(TRIM(traffic_source.medium), ''),
-                '(none)'
-            ) as medium,
-            event_timestamp,
-            ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) ORDER BY event_timestamp ASC) as event_order
-        FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-    ),
-    session_first_source AS (
-        SELECT 
-            user_pseudo_id,
-            session_id,
-            FIRST_VALUE(source) OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) as session_source,
-            FIRST_VALUE(medium) OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) as session_medium
-        FROM session_sources
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) = 1
-    ),
-    purchase_events AS (
-        SELECT 
-            e._TABLE_SUFFIX as suffix,
-            e.user_pseudo_id,
-            (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
-            e.ecommerce.purchase_revenue as revenue,
-            -- 이벤트 레벨 소스 (우선순위 1, 원본 대소문자 유지)
-            COALESCE(
-                NULLIF(TRIM(e.collected_traffic_source.manual_source), ''),
-                NULLIF(TRIM((SELECT value.string_value FROM UNNEST(e.event_params) WHERE key = 'source' LIMIT 1)), ''),
-                NULLIF(TRIM(e.traffic_source.source), '')
-            ) as event_source,
-            COALESCE(
-                NULLIF(TRIM(e.collected_traffic_source.manual_medium), ''),
-                NULLIF(TRIM((SELECT value.string_value FROM UNNEST(e.event_params) WHERE key = 'medium' LIMIT 1)), ''),
-                NULLIF(TRIM(e.traffic_source.medium), '')
-            ) as event_medium
-        FROM `sidiz-458301.analytics_487246344.events_*` e
-        WHERE e._TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-        AND e.event_name = 'purchase'
-        AND e.ecommerce.purchase_revenue > 0
-    ),
-    purchase_with_source AS (
-        SELECT 
-            p.suffix,
-            p.revenue,
-            CONCAT(
-                COALESCE(NULLIF(p.event_source, ''), s.session_source, '(direct)'),
-                ' / ',
-                COALESCE(NULLIF(p.event_medium, ''), s.session_medium, '(none)')
-            ) as channel
-        FROM purchase_events p
-        LEFT JOIN session_first_source s 
-            ON p.user_pseudo_id = s.user_pseudo_id 
-            AND p.session_id = s.session_id
-    ),
-    current_channels AS (
-        SELECT channel, SUM(revenue) as revenue
-        FROM purchase_with_source
-        WHERE suffix BETWEEN '{s_c}' AND '{e_c}'
-        GROUP BY 1
-    ),
-    previous_channels AS (
-        SELECT channel, SUM(revenue) as revenue
-        FROM purchase_with_source
-        WHERE suffix BETWEEN '{s_p}' AND '{e_p}'
-        GROUP BY 1
-    )
-    SELECT 
-        COALESCE(c.channel, p.channel) as channel_name, 
-        COALESCE(c.revenue, 0) as current_revenue, 
-        COALESCE(p.revenue, 0) as previous_revenue, 
-        COALESCE(c.revenue, 0) - COALESCE(p.revenue, 0) as revenue_change, 
-        ROUND(SAFE_DIVIDE((COALESCE(c.revenue, 0) - COALESCE(p.revenue, 0)) * 100, NULLIF(COALESCE(p.revenue, 0), 0)), 1) as change_pct
-    FROM current_channels c 
-    FULL OUTER JOIN previous_channels p ON c.channel = p.channel 
-    ORDER BY ABS(COALESCE(c.revenue, 0) - COALESCE(p.revenue, 0)) DESC 
-    LIMIT 10
-    """
-
-    # 채널별 세션 변화 (collected_traffic_source 우선 + 원본 대소문자 유지)
-    channel_sessions_query = f"""
+    # 채널별 매출 & 세션 변화 (통합 쿼리 - 단일 소스)
+    channel_combined_query = f"""
     WITH session_sources AS (
         SELECT 
             user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
             _TABLE_SUFFIX as suffix,
-            COALESCE(
+            event_name,
+            ecommerce.purchase_revenue,
+            LOWER(COALESCE(
                 NULLIF(TRIM(collected_traffic_source.manual_source), ''),
                 NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)), ''),
                 NULLIF(TRIM(traffic_source.source), ''),
                 '(direct)'
-            ) as source,
-            COALESCE(
+            )) as source,
+            LOWER(COALESCE(
                 NULLIF(TRIM(collected_traffic_source.manual_medium), ''),
                 NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1)), ''),
                 NULLIF(TRIM(traffic_source.medium), ''),
                 '(none)'
-            ) as medium,
+            )) as medium,
             event_timestamp,
             ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) ORDER BY event_timestamp ASC) as event_order
         FROM `sidiz-458301.analytics_487246344.events_*`
@@ -258,42 +167,49 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             user_pseudo_id,
             session_id,
             suffix,
+            event_name,
+            purchase_revenue,
             FIRST_VALUE(source) OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) as session_source,
             FIRST_VALUE(medium) OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) as session_medium
         FROM session_sources
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) = 1
     ),
-    session_channels AS (
+    events_with_channel AS (
         SELECT 
             suffix,
             CONCAT(session_source, ' / ', session_medium) as channel,
-            CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) as unique_session
+            CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) as unique_session,
+            event_name,
+            purchase_revenue
         FROM session_first_source
     ),
-    current_sessions AS (
-        SELECT channel, COUNT(DISTINCT unique_session) as sessions
-        FROM session_channels
-        WHERE suffix BETWEEN '{s_c}' AND '{e_c}'
-        GROUP BY 1
-    ),
-    previous_sessions AS (
-        SELECT channel, COUNT(DISTINCT unique_session) as sessions
-        FROM session_channels
-        WHERE suffix BETWEEN '{s_p}' AND '{e_p}'
+    aggregated AS (
+        SELECT 
+            channel,
+            -- 현재 기간 매출
+            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' THEN COALESCE(purchase_revenue, 0) ELSE 0 END) as current_revenue,
+            -- 이전 기간 매출
+            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' THEN COALESCE(purchase_revenue, 0) ELSE 0 END) as previous_revenue,
+            -- 현재 기간 세션
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN unique_session END) as current_sessions,
+            -- 이전 기간 세션
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN unique_session END) as previous_sessions
+        FROM events_with_channel
         GROUP BY 1
     )
     SELECT 
-        COALESCE(c.channel, p.channel) as channel_name, 
-        COALESCE(c.sessions, 0) as current_sessions, 
-        COALESCE(p.sessions, 0) as previous_sessions, 
-        COALESCE(c.sessions, 0) - COALESCE(p.sessions, 0) as sessions_change, 
-        ROUND(SAFE_DIVIDE((COALESCE(c.sessions, 0) - COALESCE(p.sessions, 0)) * 100, NULLIF(COALESCE(p.sessions, 0), 0)), 1) as change_pct
-    FROM current_sessions c 
-    FULL OUTER JOIN previous_sessions p ON c.channel = p.channel 
-    ORDER BY ABS(COALESCE(c.sessions, 0) - COALESCE(p.sessions, 0)) DESC 
-    LIMIT 10
+        channel as channel_name,
+        COALESCE(current_revenue, 0) as current_revenue,
+        COALESCE(previous_revenue, 0) as previous_revenue,
+        COALESCE(current_revenue, 0) - COALESCE(previous_revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((COALESCE(current_revenue, 0) - COALESCE(previous_revenue, 0)) * 100, NULLIF(COALESCE(previous_revenue, 0), 0)), 1) as revenue_change_pct,
+        COALESCE(current_sessions, 0) as current_sessions,
+        COALESCE(previous_sessions, 0) as previous_sessions,
+        COALESCE(current_sessions, 0) - COALESCE(previous_sessions, 0) as sessions_change,
+        ROUND(SAFE_DIVIDE((COALESCE(current_sessions, 0) - COALESCE(previous_sessions, 0)) * 100, NULLIF(COALESCE(previous_sessions, 0), 0)), 1) as sessions_change_pct
+    FROM aggregated
+    ORDER BY ABS(COALESCE(current_revenue, 0) - COALESCE(previous_revenue, 0)) DESC
+    LIMIT 20
     """
-
     # 지역별 변화
     demo_query = f"""
     WITH current_demo AS (
@@ -421,10 +337,12 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         # 쿼리 실행
         st.sidebar.write("🔄 쿼리 실행 중...")
         
+        # 채널 통합 쿼리 실행
+        channel_combined_df = client.query(channel_combined_query).to_dataframe()
+        
         results = {
             'product': client.query(product_query).to_dataframe(),
-            'channel_revenue': client.query(channel_query).to_dataframe(),
-            'channel_sessions': client.query(channel_sessions_query).to_dataframe(),
+            'channel_combined': channel_combined_df,  # 통합 데이터
             'demo': client.query(demo_query).to_dataframe(),
             'device': client.query(device_query).to_dataframe(),
             'demographics_combined': client.query(demographics_combined_query).to_dataframe()
@@ -438,17 +356,15 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             else:
                 st.sidebar.write(f"- {key}: ❌ None")
         
-        # NaN을 0으로 명시적 변환 (각 데이터프레임별로 - 매우 중요!)
+        # NaN을 0으로 명시적 변환
         for key in results:
             if results[key] is not None and not results[key].empty:
-                # 숫자형 컬럼만 fillna(0) 적용
                 numeric_cols = results[key].select_dtypes(include=['float64', 'int64']).columns
                 results[key][numeric_cols] = results[key][numeric_cols].fillna(0)
         
         # 컬럼명 정확히 매칭
         results['product'].columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
-        results['channel_revenue'].columns = ['채널', '현재매출', '이전매출', '매출변화', '증감율']
-        results['channel_sessions'].columns = ['채널', '현재세션', '이전세션', '세션변화', '증감율']
+        results['channel_combined'].columns = ['채널', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
         results['demo'].columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
         results['device'].columns = ['디바이스', '현재매출', '이전매출', '매출변화', '증감율']
         results['demographics_combined'].columns = ['인구통계', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
@@ -491,20 +407,22 @@ def generate_insights(curr, prev, insight_data):
                 insights.append(f"**{idx+1}. {row['제품명']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['증감율']:+.1f}%)")
     
     # 3. 채널 매출 영향 (TOP3)
-    if 'channel_revenue' in insight_data and insight_data['channel_revenue'] is not None and not insight_data['channel_revenue'].empty:
+    if 'channel_combined' in insight_data and insight_data['channel_combined'] is not None and not insight_data['channel_combined'].empty:
         insights.append(f"\n### 🎯 주요 채널 매출 영향 TOP3")
-        for idx, row in insight_data['channel_revenue'].head(3).iterrows():
+        for idx, row in insight_data['channel_combined'].head(3).iterrows():
             if abs(row['매출변화']) > 300000:
                 direction = "↑" if row['매출변화'] > 0 else "↓"
-                insights.append(f"**{idx+1}. {row['채널']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['증감율']:+.1f}%)")
+                insights.append(f"**{idx+1}. {row['채널']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['매출증감율']:+.1f}%)")
     
     # 4. 채널 유입 영향 (TOP3)
-    if 'channel_sessions' in insight_data and insight_data['channel_sessions'] is not None and not insight_data['channel_sessions'].empty:
+    if 'channel_combined' in insight_data and insight_data['channel_combined'] is not None and not insight_data['channel_combined'].empty:
         insights.append(f"\n### 🚪 주요 채널 유입 영향 TOP3")
-        for idx, row in insight_data['channel_sessions'].head(3).iterrows():
+        # 세션 변화량 기준으로 정렬
+        channel_sessions_top3 = insight_data['channel_combined'].sort_values('세션변화', ascending=False, key=abs).head(3)
+        for idx, (i, row) in enumerate(channel_sessions_top3.iterrows()):
             if abs(row['세션변화']) > 100:
                 direction = "↑" if row['세션변화'] > 0 else "↓"
-                insights.append(f"**{idx+1}. {row['채널']}** {direction} {abs(row['세션변화']):,.0f}세션 ({row['증감율']:+.1f}%)")
+                insights.append(f"**{idx+1}. {row['채널']}** {direction} {abs(row['세션변화']):,.0f}세션 ({row['세션증감율']:+.1f}%)")
     
     # 5. 인구통계 매출 영향 (TOP3) - 강화된 예외 처리
     if 'demographics_combined' in insight_data and insight_data['demographics_combined'] is not None and not insight_data['demographics_combined'].empty:
@@ -764,20 +682,7 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                         st.dataframe(df, use_container_width=True, height=400)
                     
                     with tab2:
-                        # 채널 매출 데이터
-                        df_rev = insight_data['channel_revenue'].copy()
-                        df_rev = df_rev.rename(columns={'채널': '채널명'})
-                        
-                        # 채널 세션 데이터
-                        df_ses = insight_data['channel_sessions'].copy()
-                        df_ses = df_ses.rename(columns={'채널': '채널명'})
-                        
-                        # 두 데이터 합치기
-                        df = pd.merge(df_rev, df_ses, on='채널명', how='outer', suffixes=('_매출', '_세션'))
-                        
-                        # 컬럼 순서 재정렬
-                        df = df[['채널명', '현재매출', '이전매출', '매출변화', '증감율_매출', '현재세션', '이전세션', '세션변화', '증감율_세션']]
-                        df = df.rename(columns={'증감율_매출': '매출증감율', '증감율_세션': '세션증감율'})
+                        df = insight_data['channel_combined'].copy()
                         
                         # 포맷 적용
                         df['현재매출'] = df['현재매출'].apply(format_currency)
