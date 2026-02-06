@@ -117,7 +117,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
     s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
 
-    # 1. 인구통계 공통 베이스 (맨 위에 위치)
+    # 1. 인구통계 공통 베이스 정의
     demographics_base = f"""
     WITH user_demographics AS (
         SELECT 
@@ -154,7 +154,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     )
     """
 
-    # 2. 통합 인구통계 쿼리 (매출 + 세션 9개 컬럼)
+    # 2. 통합 인구통계 쿼리 결합
     demographics_combined_query = demographics_base + f"""
     SELECT 
         d, 
@@ -169,7 +169,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     FROM proc GROUP BY 1 ORDER BY 2 DESC LIMIT 10
     """
 
-    # 3. 기타 쿼리들 (제품, 채널, 지역, 디바이스)
+    # 3. 기타 분석 쿼리들
     product_query = f"""
     WITH current_products AS (SELECT item.item_name as product, SUM(ecommerce.purchase_revenue) as revenue FROM `sidiz-458301.analytics_487246344.events_*`, UNNEST(items) as item WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' GROUP BY 1),
     previous_products AS (SELECT item.item_name as product, SUM(ecommerce.purchase_revenue) as revenue FROM `sidiz-458301.analytics_487246344.events_*`, UNNEST(items) as item WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' GROUP BY 1)
@@ -206,7 +206,6 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     """
 
     try:
-        # 쿼리 실행 및 데이터프레임 변환
         results = {
             'product': client.query(product_query).to_dataframe(),
             'channel_revenue': client.query(channel_query).to_dataframe(),
@@ -215,17 +214,13 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             'device': client.query(device_query).to_dataframe(),
             'demographics_combined': client.query(demographics_combined_query).to_dataframe()
         }
-        
-        # 컬럼명 설정
         results['product'].columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
         results['channel_revenue'].columns = ['채널', '현재매출', '이전매출', '매출변화', '증감율']
         results['channel_sessions'].columns = ['채널', '현재세션', '이전세션', '세션변화', '증감율']
         results['demo'].columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
         results['device'].columns = ['디바이스', '현재매출', '이전매출', '매출변화', '증감율']
         results['demographics_combined'].columns = ['인구통계', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
-        
         return results
-
     except Exception as e:
         st.error(f"⚠️ 인사이트 데이터 오류: {e}")
         return None
