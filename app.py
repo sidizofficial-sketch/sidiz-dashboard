@@ -132,23 +132,23 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     LIMIT 10
     """
 
-    # 채널별 매출 변화 (collected_traffic_source 우선 + 세션 기반)
+    # 채널별 매출 변화 (collected_traffic_source 우선 + 세션 기반 + 원본 대소문자 유지)
     channel_query = f"""
     WITH session_sources AS (
         SELECT 
             user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
-            -- collected_traffic_source를 최우선으로 사용
+            -- collected_traffic_source를 최우선으로 사용 (원본 대소문자 유지)
             COALESCE(
-                NULLIF(TRIM(LOWER(collected_traffic_source.manual_source)), ''),
-                NULLIF(TRIM(LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1))), ''),
-                NULLIF(TRIM(LOWER(traffic_source.source)), ''),
+                NULLIF(TRIM(collected_traffic_source.manual_source), ''),
+                NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)), ''),
+                NULLIF(TRIM(traffic_source.source), ''),
                 '(direct)'
             ) as source,
             COALESCE(
-                NULLIF(TRIM(LOWER(collected_traffic_source.manual_medium)), ''),
-                NULLIF(TRIM(LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1))), ''),
-                NULLIF(TRIM(LOWER(traffic_source.medium)), ''),
+                NULLIF(TRIM(collected_traffic_source.manual_medium), ''),
+                NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1)), ''),
+                NULLIF(TRIM(traffic_source.medium), ''),
                 '(none)'
             ) as medium,
             event_timestamp,
@@ -171,16 +171,16 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             e.user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
             e.ecommerce.purchase_revenue as revenue,
-            -- 이벤트 레벨 소스 (우선순위 1)
+            -- 이벤트 레벨 소스 (우선순위 1, 원본 대소문자 유지)
             COALESCE(
-                NULLIF(TRIM(LOWER(e.collected_traffic_source.manual_source)), ''),
-                NULLIF(TRIM(LOWER((SELECT value.string_value FROM UNNEST(e.event_params) WHERE key = 'source' LIMIT 1))), ''),
-                NULLIF(TRIM(LOWER(e.traffic_source.source)), '')
+                NULLIF(TRIM(e.collected_traffic_source.manual_source), ''),
+                NULLIF(TRIM((SELECT value.string_value FROM UNNEST(e.event_params) WHERE key = 'source' LIMIT 1)), ''),
+                NULLIF(TRIM(e.traffic_source.source), '')
             ) as event_source,
             COALESCE(
-                NULLIF(TRIM(LOWER(e.collected_traffic_source.manual_medium)), ''),
-                NULLIF(TRIM(LOWER((SELECT value.string_value FROM UNNEST(e.event_params) WHERE key = 'medium' LIMIT 1))), ''),
-                NULLIF(TRIM(LOWER(e.traffic_source.medium)), '')
+                NULLIF(TRIM(e.collected_traffic_source.manual_medium), ''),
+                NULLIF(TRIM((SELECT value.string_value FROM UNNEST(e.event_params) WHERE key = 'medium' LIMIT 1)), ''),
+                NULLIF(TRIM(e.traffic_source.medium), '')
             ) as event_medium
         FROM `sidiz-458301.analytics_487246344.events_*` e
         WHERE e._TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
@@ -192,12 +192,14 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             p.suffix,
             p.revenue,
             CONCAT(
-                COALESCE(p.event_source, s.session_source, '(direct)'),
+                COALESCE(NULLIF(p.event_source, ''), s.session_source, '(direct)'),
                 ' / ',
-                COALESCE(p.event_medium, s.session_medium, '(none)')
+                COALESCE(NULLIF(p.event_medium, ''), s.session_medium, '(none)')
             ) as channel
         FROM purchase_events p
-        LEFT JOIN session_first_source s ON p.user_pseudo_id = s.user_pseudo_id AND p.session_id = s.session_id
+        LEFT JOIN session_first_source s 
+            ON p.user_pseudo_id = s.user_pseudo_id 
+            AND p.session_id = s.session_id
     ),
     current_channels AS (
         SELECT channel, SUM(revenue) as revenue
@@ -213,17 +215,17 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     )
     SELECT 
         COALESCE(c.channel, p.channel) as channel_name, 
-        IFNULL(c.revenue, 0) as current_revenue, 
-        IFNULL(p.revenue, 0) as previous_revenue, 
-        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change, 
-        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
+        COALESCE(c.revenue, 0) as current_revenue, 
+        COALESCE(p.revenue, 0) as previous_revenue, 
+        COALESCE(c.revenue, 0) - COALESCE(p.revenue, 0) as revenue_change, 
+        ROUND(SAFE_DIVIDE((COALESCE(c.revenue, 0) - COALESCE(p.revenue, 0)) * 100, NULLIF(COALESCE(p.revenue, 0), 0)), 1) as change_pct
     FROM current_channels c 
     FULL OUTER JOIN previous_channels p ON c.channel = p.channel 
-    ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC 
+    ORDER BY ABS(COALESCE(c.revenue, 0) - COALESCE(p.revenue, 0)) DESC 
     LIMIT 10
     """
 
-    # 채널별 세션 변화 (collected_traffic_source 우선)
+    # 채널별 세션 변화 (collected_traffic_source 우선 + 원본 대소문자 유지)
     channel_sessions_query = f"""
     WITH session_sources AS (
         SELECT 
@@ -231,15 +233,15 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
             _TABLE_SUFFIX as suffix,
             COALESCE(
-                NULLIF(TRIM(LOWER(collected_traffic_source.manual_source)), ''),
-                NULLIF(TRIM(LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1))), ''),
-                NULLIF(TRIM(LOWER(traffic_source.source)), ''),
+                NULLIF(TRIM(collected_traffic_source.manual_source), ''),
+                NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)), ''),
+                NULLIF(TRIM(traffic_source.source), ''),
                 '(direct)'
             ) as source,
             COALESCE(
-                NULLIF(TRIM(LOWER(collected_traffic_source.manual_medium)), ''),
-                NULLIF(TRIM(LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1))), ''),
-                NULLIF(TRIM(LOWER(traffic_source.medium)), ''),
+                NULLIF(TRIM(collected_traffic_source.manual_medium), ''),
+                NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1)), ''),
+                NULLIF(TRIM(traffic_source.medium), ''),
                 '(none)'
             ) as medium,
             event_timestamp,
@@ -248,6 +250,45 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
     ),
     session_first_source AS (
+        SELECT 
+            user_pseudo_id,
+            session_id,
+            suffix,
+            FIRST_VALUE(source) OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) as session_source,
+            FIRST_VALUE(medium) OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) as session_medium
+        FROM session_sources
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) = 1
+    ),
+    session_channels AS (
+        SELECT 
+            suffix,
+            CONCAT(session_source, ' / ', session_medium) as channel,
+            CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) as unique_session
+        FROM session_first_source
+    ),
+    current_sessions AS (
+        SELECT channel, COUNT(DISTINCT unique_session) as sessions
+        FROM session_channels
+        WHERE suffix BETWEEN '{s_c}' AND '{e_c}'
+        GROUP BY 1
+    ),
+    previous_sessions AS (
+        SELECT channel, COUNT(DISTINCT unique_session) as sessions
+        FROM session_channels
+        WHERE suffix BETWEEN '{s_p}' AND '{e_p}'
+        GROUP BY 1
+    )
+    SELECT 
+        COALESCE(c.channel, p.channel) as channel_name, 
+        COALESCE(c.sessions, 0) as current_sessions, 
+        COALESCE(p.sessions, 0) as previous_sessions, 
+        COALESCE(c.sessions, 0) - COALESCE(p.sessions, 0) as sessions_change, 
+        ROUND(SAFE_DIVIDE((COALESCE(c.sessions, 0) - COALESCE(p.sessions, 0)) * 100, NULLIF(COALESCE(p.sessions, 0), 0)), 1) as change_pct
+    FROM current_sessions c 
+    FULL OUTER JOIN previous_sessions p ON c.channel = p.channel 
+    ORDER BY ABS(COALESCE(c.sessions, 0) - COALESCE(p.sessions, 0)) DESC 
+    LIMIT 10
+    """
         SELECT 
             user_pseudo_id,
             session_id,
@@ -412,6 +453,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     """
 
     try:
+        # 쿼리 실행
         results = {
             'product': client.query(product_query).to_dataframe(),
             'channel_revenue': client.query(channel_query).to_dataframe(),
@@ -421,10 +463,12 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             'demographics_combined': client.query(demographics_combined_query).to_dataframe()
         }
         
-        # NaN을 0으로 명시적 변환 (각 데이터프레임별로)
+        # NaN을 0으로 명시적 변환 (각 데이터프레임별로 - 매우 중요!)
         for key in results:
             if results[key] is not None and not results[key].empty:
-                results[key] = results[key].fillna(0)
+                # 숫자형 컬럼만 fillna(0) 적용
+                numeric_cols = results[key].select_dtypes(include=['float64', 'int64']).columns
+                results[key][numeric_cols] = results[key][numeric_cols].fillna(0)
         
         # 컬럼명 정확히 매칭
         results['product'].columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
