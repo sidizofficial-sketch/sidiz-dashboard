@@ -202,24 +202,23 @@ try:
             # 각 데이터프레임의 성격에 맞게 컬럼명 복구
             if key == 'product':
                 df.columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
-            elif key in ['channel_revenue', 'channel_sessions']:
-                col_name = '현재매출' if 'revenue' in key else '현재세션'
-                prev_name = '이전매출' if 'revenue' in key else '이전세션'
-                diff_name = '매출변화' if 'revenue' in key else '세션변화'
-                df.columns = ['채널', col_name, prev_name, diff_name, '증감율']
+            elif key == 'channel_revenue':
+                df.columns = ['채널', '현재매출', '이전매출', '매출변화', '증감율']
+            elif key == 'channel_sessions':
+                df.columns = ['채널', '현재세션', '이전세션', '세션변화', '증감율']
             elif key == 'demo':
                 df.columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
             elif key == 'device':
                 df.columns = ['디바이스', '현재매출', '이전매출', '매출변화', '증감율']
-            elif key in ['demographics_revenue', 'demographics_sessions']:
-                col_name = '현재매출' if 'revenue' in key else '현재세션'
-                prev_name = '이전매출' if 'revenue' in key else '이전세션'
-                diff_name = '매출변화' if 'revenue' in key else '세션변화'
-                df.columns = ['인구통계', col_name, prev_name, diff_name, '증감율']
+            elif key == 'demographics_revenue':
+                df.columns = ['인구통계', '현재매출', '이전매출', '매출변화', '증감율']
+            elif key == 'demographics_sessions':
+                df.columns = ['인구통계', '현재세션', '이전세션', '세션변화', '증감율']
             
             results[key] = df
             
         return results
+
     except Exception as e:
         st.error(f"⚠️ 인사이트 데이터 오류: {e}")
         return None
