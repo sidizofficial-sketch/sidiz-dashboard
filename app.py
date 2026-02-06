@@ -289,45 +289,6 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     ORDER BY ABS(COALESCE(c.sessions, 0) - COALESCE(p.sessions, 0)) DESC 
     LIMIT 10
     """
-        SELECT 
-            user_pseudo_id,
-            session_id,
-            suffix,
-            FIRST_VALUE(source) OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) as session_source,
-            FIRST_VALUE(medium) OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) as session_medium
-        FROM session_sources
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) = 1
-    ),
-    session_channels AS (
-        SELECT 
-            suffix,
-            CONCAT(session_source, ' / ', session_medium) as channel,
-            CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) as unique_session
-        FROM session_first_source
-    ),
-    current_sessions AS (
-        SELECT channel, COUNT(DISTINCT unique_session) as sessions
-        FROM session_channels
-        WHERE suffix BETWEEN '{s_c}' AND '{e_c}'
-        GROUP BY 1
-    ),
-    previous_sessions AS (
-        SELECT channel, COUNT(DISTINCT unique_session) as sessions
-        FROM session_channels
-        WHERE suffix BETWEEN '{s_p}' AND '{e_p}'
-        GROUP BY 1
-    )
-    SELECT 
-        COALESCE(c.channel, p.channel) as channel_name, 
-        IFNULL(c.sessions, 0) as current_sessions, 
-        IFNULL(p.sessions, 0) as previous_sessions, 
-        IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0) as sessions_change, 
-        ROUND(SAFE_DIVIDE((IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) * 100, IFNULL(p.sessions, 0)), 1) as change_pct
-    FROM current_sessions c 
-    FULL OUTER JOIN previous_sessions p ON c.channel = p.channel 
-    ORDER BY ABS(IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) DESC 
-    LIMIT 10
-    """
 
     # 지역별 변화
     demo_query = f"""
