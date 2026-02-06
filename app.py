@@ -275,20 +275,22 @@ def generate_insights(curr, prev, insight_data):
                 insights.append(f"**{idx+1}. {row['채널']}** {direction} {abs(row['세션변화']):,.0f}세션 ({row['증감율']:+.1f}%)")
     
     # 5. 인구통계 매출 영향 (TOP3)
-    if insight_data and 'demographics_revenue' in insight_data and not insight_data['demographics_revenue'].empty:
+    if insight_data and 'demographics_combined' in insight_data and not insight_data['demographics_combined'].empty:
         insights.append(f"\n### 👥 인구통계 매출 영향 TOP3")
-        for idx, row in insight_data['demographics_revenue'].head(3).iterrows():
+        for idx, row in insight_data['demographics_combined'].head(3).iterrows():
             if abs(row['매출변화']) > 300000:
                 direction = "↑" if row['매출변화'] > 0 else "↓"
-                insights.append(f"**{idx+1}. {row['인구통계']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['증감율']:+.1f}%)")
+                insights.append(f"**{idx+1}. {row['인구통계']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['매출증감율']:+.1f}%)")
     
     # 6. 인구통계 유입 영향 (TOP3)
-    if insight_data and 'demographics_sessions' in insight_data and not insight_data['demographics_sessions'].empty:
+    if insight_data and 'demographics_combined' in insight_data and not insight_data['demographics_combined'].empty:
         insights.append(f"\n### 🚶 인구통계 유입 영향 TOP3")
-        for idx, row in insight_data['demographics_sessions'].head(3).iterrows():
+        # 세션 변화량 기준으로 정렬해서 상위 3개 출력
+        demo_ses_top3 = insight_data['demographics_combined'].sort_values('세션변화', ascending=False).head(3)
+        for idx, (i, row) in enumerate(demo_ses_top3.iterrows()):
             if abs(row['세션변화']) > 100:
                 direction = "↑" if row['세션변화'] > 0 else "↓"
-                insights.append(f"**{idx+1}. {row['인구통계']}** {direction} {abs(row['세션변화']):,.0f}세션 ({row['증감율']:+.1f}%)")
+                insights.append(f"**{idx+1}. {row['인구통계']}** {direction} {abs(row['세션변화']):,.0f}세션 ({row['세션증감율']:+.1f}%)")
     
     # 7. 대량 구매 영향
     bulk_change = curr['bulk_revenue'] - prev['bulk_revenue']
@@ -527,20 +529,7 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                         st.dataframe(df, use_container_width=True, height=400)
                     
                     with tab3:
-                        # 인구통계 매출 데이터
-                        df_rev = insight_data['demographics_revenue'].copy()
-                        df_rev = df_rev.rename(columns={'인구통계': '인구통계'})
-                        
-                        # 인구통계 세션 데이터
-                        df_ses = insight_data['demographics_sessions'].copy()
-                        df_ses = df_ses.rename(columns={'인구통계': '인구통계'})
-                        
-                        # 두 데이터 합치기
-                        df = pd.merge(df_rev, df_ses, on='인구통계', how='outer', suffixes=('_매출', '_세션'))
-                        
-                        # 컬럼 순서 재정렬
-                        df = df[['인구통계', '현재매출', '이전매출', '매출변화', '증감율_매출', '현재세션', '이전세션', '세션변화', '증감율_세션']]
-                        df = df.rename(columns={'증감율_매출': '매출증감율', '증감율_세션': '세션증감율'})
+                        df = insight_data['demographics_combined'].copy()
                         
                         # 포맷 적용
                         df['현재매출'] = df['현재매출'].apply(format_currency)
