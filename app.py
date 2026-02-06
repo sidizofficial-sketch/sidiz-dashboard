@@ -110,12 +110,12 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
     st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
 
-    # 제품별 매출 변화 (item_id 기준 + 최신 제품명)
+    # 제품별 매출 변화 (제품명 기준 통합 + 공백/대소문자 정규화)
     product_query = f"""
-    WITH product_with_period AS (
+    WITH product_normalized AS (
         SELECT 
-            item.item_id,
-            item.item_name,
+            UPPER(TRIM(REGEXP_REPLACE(item.item_name, r'\\s+', ' '))) as normalized_name,
+            item.item_name as original_name,
             _TABLE_SUFFIX as suffix,
             ecommerce.purchase_revenue
         FROM `sidiz-458301.analytics_487246344.events_*`,
@@ -123,39 +123,39 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
         AND event_name = 'purchase'
     ),
-    current_names AS (
+    latest_names AS (
         SELECT 
-            item_id,
-            ARRAY_AGG(item_name ORDER BY suffix DESC LIMIT 1)[OFFSET(0)] as latest_name
-        FROM product_with_period
+            normalized_name,
+            ARRAY_AGG(original_name ORDER BY suffix DESC LIMIT 1)[OFFSET(0)] as display_name
+        FROM product_normalized
         WHERE suffix BETWEEN '{s_c}' AND '{e_c}'
-        GROUP BY item_id
+        GROUP BY normalized_name
     ),
-    previous_names AS (
+    fallback_names AS (
         SELECT 
-            item_id,
-            ARRAY_AGG(item_name ORDER BY suffix DESC LIMIT 1)[OFFSET(0)] as prev_name
-        FROM product_with_period
+            normalized_name,
+            ARRAY_AGG(original_name ORDER BY suffix DESC LIMIT 1)[OFFSET(0)] as fallback_name
+        FROM product_normalized
         WHERE suffix BETWEEN '{s_p}' AND '{e_p}'
-        GROUP BY item_id
+        GROUP BY normalized_name
     ),
     aggregated AS (
         SELECT 
-            item_id,
+            normalized_name,
             SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN purchase_revenue ELSE 0 END) as current_revenue,
             SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN purchase_revenue ELSE 0 END) as previous_revenue
-        FROM product_with_period
-        GROUP BY item_id
+        FROM product_normalized
+        GROUP BY normalized_name
     )
     SELECT 
-        COALESCE(cn.latest_name, pn.prev_name, a.item_id) as product_name,
+        COALESCE(ln.display_name, fn.fallback_name, a.normalized_name) as product_name,
         COALESCE(a.current_revenue, 0) as current_revenue,
         COALESCE(a.previous_revenue, 0) as previous_revenue,
         COALESCE(a.current_revenue, 0) - COALESCE(a.previous_revenue, 0) as revenue_change,
         ROUND(SAFE_DIVIDE((COALESCE(a.current_revenue, 0) - COALESCE(a.previous_revenue, 0)) * 100, NULLIF(COALESCE(a.previous_revenue, 0), 0)), 1) as change_pct
     FROM aggregated a
-    LEFT JOIN current_names cn ON a.item_id = cn.item_id
-    LEFT JOIN previous_names pn ON a.item_id = pn.item_id
+    LEFT JOIN latest_names ln ON a.normalized_name = ln.normalized_name
+    LEFT JOIN fallback_names fn ON a.normalized_name = fn.normalized_name
     ORDER BY ABS(COALESCE(a.current_revenue, 0) - COALESCE(a.previous_revenue, 0)) DESC
     LIMIT 10
     """
@@ -388,6 +388,33 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         
         # 컬럼명 정확히 매칭
         results['product'].columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
+        
+        # 제품명 정규화 및 재집계 (중복 완전 제거)
+        if not results['product'].empty:
+            product_df = results['product'].copy()
+            # 제품명 정규화 (공백 제거, 대문자 변환)
+            product_df['정규화_제품명'] = product_df['제품명'].str.strip().str.upper().str.replace(r'\s+', ' ', regex=True)
+            
+            # 정규화된 제품명 기준으로 재집계
+            aggregated = product_df.groupby('정규화_제품명', as_index=False).agg({
+                '제품명': 'first',  # 첫 번째 원본 이름 사용
+                '현재매출': 'sum',
+                '이전매출': 'sum',
+                '매출변화': 'sum'
+            })
+            
+            # 증감율 재계산
+            aggregated['증감율'] = aggregated.apply(
+                lambda row: round((row['매출변화'] / row['이전매출'] * 100) if row['이전매출'] > 0 else 0, 1),
+                axis=1
+            )
+            
+            # 매출변화 절대값 기준 정렬
+            aggregated = aggregated.sort_values('매출변화', key=abs, ascending=False).head(10)
+            
+            # 정규화 컬럼 제거 및 최종 결과
+            results['product'] = aggregated[['제품명', '현재매출', '이전매출', '매출변화', '증감율']].reset_index(drop=True)
+        
         results['channel_combined'].columns = ['채널', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
         results['demo'].columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
         results['device'].columns = ['디바이스', '현재매출', '이전매출', '매출변화', '증감율']
