@@ -246,23 +246,188 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
     """
     
+    # 인구통계별 매출 변화 (성별&연령 조합)
+    demographics_query = f"""
+    WITH current_demographics AS (
+        SELECT 
+            CONCAT(
+                CASE 
+                    WHEN user_properties.value.string_value = 'male' THEN '남성'
+                    WHEN user_properties.value.string_value = 'female' THEN '여성'
+                    ELSE '기타'
+                END,
+                ' / ',
+                COALESCE(
+                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'age_group' LIMIT 1),
+                    'Unknown'
+                )
+            ) as demographic,
+            SUM(ecommerce.purchase_revenue) as revenue
+        FROM `sidiz-458301.analytics_487246344.events_*`,
+        UNNEST(user_properties) as user_properties
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        AND event_name = 'purchase'
+        AND user_properties.key = 'gender'
+        GROUP BY 1
+    ),
+    previous_demographics AS (
+        SELECT 
+            CONCAT(
+                CASE 
+                    WHEN user_properties.value.string_value = 'male' THEN '남성'
+                    WHEN user_properties.value.string_value = 'female' THEN '여성'
+                    ELSE '기타'
+                END,
+                ' / ',
+                COALESCE(
+                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'age_group' LIMIT 1),
+                    'Unknown'
+                )
+            ) as demographic,
+            SUM(ecommerce.purchase_revenue) as revenue
+        FROM `sidiz-458301.analytics_487246344.events_*`,
+        UNNEST(user_properties) as user_properties
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
+        AND event_name = 'purchase'
+        AND user_properties.key = 'gender'
+        GROUP BY 1
+    )
+    SELECT 
+        COALESCE(c.demographic, p.demographic) as demographic_name,
+        IFNULL(c.revenue, 0) as current_revenue,
+        IFNULL(p.revenue, 0) as previous_revenue,
+        IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
+    FROM current_demographics c
+    FULL OUTER JOIN previous_demographics p ON c.demographic = p.demographic
+    ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
+    LIMIT 10
+    """
+    
+    # 채널별 유입(세션) 변화
+    channel_sessions_query = f"""
+    WITH current_channels AS (
+        SELECT 
+            CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel,
+            COUNT(DISTINCT CONCAT(
+                user_pseudo_id, 
+                CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)
+            )) as sessions
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        GROUP BY 1
+    ),
+    previous_channels AS (
+        SELECT 
+            CONCAT(traffic_source.source, ' / ', traffic_source.medium) as channel,
+            COUNT(DISTINCT CONCAT(
+                user_pseudo_id, 
+                CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)
+            )) as sessions
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
+        GROUP BY 1
+    )
+    SELECT 
+        COALESCE(c.channel, p.channel) as channel_name,
+        IFNULL(c.sessions, 0) as current_sessions,
+        IFNULL(p.sessions, 0) as previous_sessions,
+        IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0) as sessions_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) * 100, IFNULL(p.sessions, 0)), 1) as change_pct
+    FROM current_channels c
+    FULL OUTER JOIN previous_channels p ON c.channel = p.channel
+    ORDER BY ABS(IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) DESC
+    LIMIT 10
+    """
+    
+    # 인구통계별 유입(세션) 변화
+    demographics_sessions_query = f"""
+    WITH current_demographics AS (
+        SELECT 
+            CONCAT(
+                CASE 
+                    WHEN user_properties.value.string_value = 'male' THEN '남성'
+                    WHEN user_properties.value.string_value = 'female' THEN '여성'
+                    ELSE '기타'
+                END,
+                ' / ',
+                COALESCE(
+                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'age_group' LIMIT 1),
+                    'Unknown'
+                )
+            ) as demographic,
+            COUNT(DISTINCT CONCAT(
+                user_pseudo_id, 
+                CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)
+            )) as sessions
+        FROM `sidiz-458301.analytics_487246344.events_*`,
+        UNNEST(user_properties) as user_properties
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        AND user_properties.key = 'gender'
+        GROUP BY 1
+    ),
+    previous_demographics AS (
+        SELECT 
+            CONCAT(
+                CASE 
+                    WHEN user_properties.value.string_value = 'male' THEN '남성'
+                    WHEN user_properties.value.string_value = 'female' THEN '여성'
+                    ELSE '기타'
+                END,
+                ' / ',
+                COALESCE(
+                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'age_group' LIMIT 1),
+                    'Unknown'
+                )
+            ) as demographic,
+            COUNT(DISTINCT CONCAT(
+                user_pseudo_id, 
+                CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)
+            )) as sessions
+        FROM `sidiz-458301.analytics_487246344.events_*`,
+        UNNEST(user_properties) as user_properties
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}'
+        AND user_properties.key = 'gender'
+        GROUP BY 1
+    )
+    SELECT 
+        COALESCE(c.demographic, p.demographic) as demographic_name,
+        IFNULL(c.sessions, 0) as current_sessions,
+        IFNULL(p.sessions, 0) as previous_sessions,
+        IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0) as sessions_change,
+        ROUND(SAFE_DIVIDE((IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) * 100, IFNULL(p.sessions, 0)), 1) as change_pct
+    FROM current_demographics c
+    FULL OUTER JOIN previous_demographics p ON c.demographic = p.demographic
+    ORDER BY ABS(IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) DESC
+    LIMIT 10
+    """
+    
     try:
         product_df = client.query(product_query).to_dataframe()
         channel_df = client.query(channel_query).to_dataframe()
         demo_df = client.query(demo_query).to_dataframe()
         device_df = client.query(device_query).to_dataframe()
+        demographics_df = client.query(demographics_query).to_dataframe()
+        channel_sessions_df = client.query(channel_sessions_query).to_dataframe()
+        demographics_sessions_df = client.query(demographics_sessions_query).to_dataframe()
         
         # 컬럼명을 한글로 변경 (쿼리 후)
         product_df.columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
         channel_df.columns = ['채널', '현재매출', '이전매출', '매출변화', '증감율']
         demo_df.columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
         device_df.columns = ['디바이스', '현재매출', '이전매출', '매출변화', '증감율']
+        demographics_df.columns = ['인구통계', '현재매출', '이전매출', '매출변화', '증감율']
+        channel_sessions_df.columns = ['채널', '현재세션', '이전세션', '세션변화', '증감율']
+        demographics_sessions_df.columns = ['인구통계', '현재세션', '이전세션', '세션변화', '증감율']
         
         return {
             'product': product_df,
-            'channel': channel_df,
+            'channel_revenue': channel_df,
+            'channel_sessions': channel_sessions_df,
             'demo': demo_df,
-            'device': device_df
+            'device': device_df,
+            'demographics_revenue': demographics_df,
+            'demographics_sessions': demographics_sessions_df
         }
     except Exception as e:
         st.error(f"⚠️ 인사이트 데이터 오류: {e}")
@@ -291,15 +456,39 @@ def generate_insights(curr, prev, insight_data):
                 direction = "↑" if row['매출변화'] > 0 else "↓"
                 insights.append(f"**{idx+1}. {row['제품명']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['증감율']:+.1f}%)")
     
-    # 3. 채널 영향 (TOP3)
-    if insight_data and 'channel' in insight_data and not insight_data['channel'].empty:
-        insights.append(f"\n### 🎯 주요 채널 영향 TOP3")
-        for idx, row in insight_data['channel'].head(3).iterrows():
+    # 3. 채널 매출 영향 (TOP3)
+    if insight_data and 'channel_revenue' in insight_data and not insight_data['channel_revenue'].empty:
+        insights.append(f"\n### 🎯 주요 채널 매출 영향 TOP3")
+        for idx, row in insight_data['channel_revenue'].head(3).iterrows():
             if abs(row['매출변화']) > 300000:
                 direction = "↑" if row['매출변화'] > 0 else "↓"
                 insights.append(f"**{idx+1}. {row['채널']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['증감율']:+.1f}%)")
     
-    # 4. 대량 구매 영향
+    # 4. 채널 유입 영향 (TOP3)
+    if insight_data and 'channel_sessions' in insight_data and not insight_data['channel_sessions'].empty:
+        insights.append(f"\n### 🚪 주요 채널 유입 영향 TOP3")
+        for idx, row in insight_data['channel_sessions'].head(3).iterrows():
+            if abs(row['세션변화']) > 100:
+                direction = "↑" if row['세션변화'] > 0 else "↓"
+                insights.append(f"**{idx+1}. {row['채널']}** {direction} {abs(row['세션변화']):,.0f}세션 ({row['증감율']:+.1f}%)")
+    
+    # 5. 인구통계 매출 영향 (TOP3)
+    if insight_data and 'demographics_revenue' in insight_data and not insight_data['demographics_revenue'].empty:
+        insights.append(f"\n### 👥 인구통계 매출 영향 TOP3")
+        for idx, row in insight_data['demographics_revenue'].head(3).iterrows():
+            if abs(row['매출변화']) > 300000:
+                direction = "↑" if row['매출변화'] > 0 else "↓"
+                insights.append(f"**{idx+1}. {row['인구통계']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['증감율']:+.1f}%)")
+    
+    # 6. 인구통계 유입 영향 (TOP3)
+    if insight_data and 'demographics_sessions' in insight_data and not insight_data['demographics_sessions'].empty:
+        insights.append(f"\n### 🚶 인구통계 유입 영향 TOP3")
+        for idx, row in insight_data['demographics_sessions'].head(3).iterrows():
+            if abs(row['세션변화']) > 100:
+                direction = "↑" if row['세션변화'] > 0 else "↓"
+                insights.append(f"**{idx+1}. {row['인구통계']}** {direction} {abs(row['세션변화']):,.0f}세션 ({row['증감율']:+.1f}%)")
+    
+    # 7. 대량 구매 영향
     bulk_change = curr['bulk_revenue'] - prev['bulk_revenue']
     bulk_pct = (bulk_change / prev['bulk_revenue'] * 100) if prev['bulk_revenue'] > 0 else 0
     
@@ -308,7 +497,7 @@ def generate_insights(curr, prev, insight_data):
         insights.append(f"\n### 💼 대량 구매 영향")
         insights.append(f"대량 구매(150만원↑) 매출이 **₩{abs(bulk_change):,.0f} ({abs(bulk_pct):.1f}%) {direction}**했습니다.")
     
-    # 5. 지역 변화
+    # 8. 지역 변화
     if insight_data and 'demo' in insight_data and not insight_data['demo'].empty:
         top_demo = insight_data['demo'].iloc[0]
         if abs(top_demo['매출변화']) > 1000000:
@@ -316,7 +505,7 @@ def generate_insights(curr, prev, insight_data):
             insights.append(f"\n### 🌍 지역별 변화")
             insights.append(f"**{top_demo['지역']}** {direction} ₩{abs(top_demo['매출변화']):,.0f} ({top_demo['증감율']:+.1f}%)")
     
-    # 6. 전환율 변화
+    # 9. 전환율 변화
     curr_cr = (curr['orders'] / curr['sessions'] * 100) if curr['sessions'] > 0 else 0
     prev_cr = (prev['orders'] / prev['sessions'] * 100) if prev['sessions'] > 0 else 0
     cr_change = curr_cr - prev_cr
@@ -381,10 +570,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         # EASY REPAIR만 구매한 주문 제외 객단가
         c_filtered_aov = (curr['filtered_revenue']/curr['filtered_orders']) if curr.get('filtered_orders', 0) > 0 else 0
         p_filtered_aov = (prev['filtered_revenue']/prev['filtered_orders']) if prev.get('filtered_orders', 0) > 0 else 0
-        
-        # 디버깅: 실제 값 확인
-        # st.write(f"DEBUG - 현재: filtered_revenue={curr.get('filtered_revenue', 0):,.0f}, filtered_orders={curr.get('filtered_orders', 0)}")
-        # st.write(f"DEBUG - 이전: filtered_revenue={prev.get('filtered_revenue', 0):,.0f}, filtered_orders={prev.get('filtered_orders', 0)}")
         
         if c_filtered_aov > 0:
             cols[4].metric("필터링 객단가", f"₩{int(c_filtered_aov):,}", get_delta(c_filtered_aov, p_filtered_aov), 
@@ -485,11 +670,20 @@ if len(curr_date) == 2 and len(comp_date) == 2:
             # [개선된 상세 데이터 테이블]
             with st.expander("📋 상세 분석 데이터 보기"):
                 if insight_data:
-                    tab1, tab2, tab3, tab4 = st.tabs(["제품별 분석", "채널별 분석", "지역별 분석", "디바이스별 분석"])
+                    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                        "제품별 분석", 
+                        "채널별 분석",
+                        "인구통계별 분석",
+                        "지역별 분석", 
+                        "디바이스별 분석"
+                    ])
                     
                     # 숫자 포맷 함수
                     def format_currency(val):
                         return f"₩{val:,.0f}"
+                    
+                    def format_number(val):
+                        return f"{val:,.0f}"
                     
                     def format_percent(val):
                         return f"{val:+.1f}%" if pd.notna(val) else "-"
@@ -503,14 +697,62 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                         st.dataframe(df, use_container_width=True, height=400)
                     
                     with tab2:
-                        df = insight_data['channel'].copy()
+                        # 채널 매출 데이터
+                        df_rev = insight_data['channel_revenue'].copy()
+                        df_rev = df_rev.rename(columns={'채널': '채널명'})
+                        
+                        # 채널 세션 데이터
+                        df_ses = insight_data['channel_sessions'].copy()
+                        df_ses = df_ses.rename(columns={'채널': '채널명'})
+                        
+                        # 두 데이터 합치기
+                        df = pd.merge(df_rev, df_ses, on='채널명', how='outer', suffixes=('_매출', '_세션'))
+                        
+                        # 컬럼 순서 재정렬
+                        df = df[['채널명', '현재매출', '이전매출', '매출변화', '증감율_매출', '현재세션', '이전세션', '세션변화', '증감율_세션']]
+                        df = df.rename(columns={'증감율_매출': '매출증감율', '증감율_세션': '세션증감율'})
+                        
+                        # 포맷 적용
                         df['현재매출'] = df['현재매출'].apply(format_currency)
                         df['이전매출'] = df['이전매출'].apply(format_currency)
                         df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
-                        df['증감율'] = df['증감율'].apply(format_percent)
+                        df['매출증감율'] = df['매출증감율'].apply(format_percent)
+                        df['현재세션'] = df['현재세션'].apply(format_number)
+                        df['이전세션'] = df['이전세션'].apply(format_number)
+                        df['세션변화'] = df['세션변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_number(abs(x))}")
+                        df['세션증감율'] = df['세션증감율'].apply(format_percent)
+                        
                         st.dataframe(df, use_container_width=True, height=400)
                     
                     with tab3:
+                        # 인구통계 매출 데이터
+                        df_rev = insight_data['demographics_revenue'].copy()
+                        df_rev = df_rev.rename(columns={'인구통계': '인구통계'})
+                        
+                        # 인구통계 세션 데이터
+                        df_ses = insight_data['demographics_sessions'].copy()
+                        df_ses = df_ses.rename(columns={'인구통계': '인구통계'})
+                        
+                        # 두 데이터 합치기
+                        df = pd.merge(df_rev, df_ses, on='인구통계', how='outer', suffixes=('_매출', '_세션'))
+                        
+                        # 컬럼 순서 재정렬
+                        df = df[['인구통계', '현재매출', '이전매출', '매출변화', '증감율_매출', '현재세션', '이전세션', '세션변화', '증감율_세션']]
+                        df = df.rename(columns={'증감율_매출': '매출증감율', '증감율_세션': '세션증감율'})
+                        
+                        # 포맷 적용
+                        df['현재매출'] = df['현재매출'].apply(format_currency)
+                        df['이전매출'] = df['이전매출'].apply(format_currency)
+                        df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
+                        df['매출증감율'] = df['매출증감율'].apply(format_percent)
+                        df['현재세션'] = df['현재세션'].apply(format_number)
+                        df['이전세션'] = df['이전세션'].apply(format_number)
+                        df['세션변화'] = df['세션변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_number(abs(x))}")
+                        df['세션증감율'] = df['세션증감율'].apply(format_percent)
+                        
+                        st.dataframe(df, use_container_width=True, height=400)
+                    
+                    with tab4:
                         df = insight_data['demo'].copy()
                         df['현재매출'] = df['현재매출'].apply(format_currency)
                         df['이전매출'] = df['이전매출'].apply(format_currency)
@@ -518,7 +760,7 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                         df['증감율'] = df['증감율'].apply(format_percent)
                         st.dataframe(df, use_container_width=True, height=400)
                     
-                    with tab4:
+                    with tab5:
                         df = insight_data['device'].copy()
                         df['현재매출'] = df['현재매출'].apply(format_currency)
                         df['이전매출'] = df['이전매출'].apply(format_currency)
