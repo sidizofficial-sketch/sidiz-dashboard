@@ -246,8 +246,8 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
     """
     
-# 4. 인구통계 베이스 (유저별 속성 전파 로직)
-    demographics_base = f"""
+# 4. 인구통계 통합 쿼리 (매출 + 세션 한 번에 추출)
+    demographics_combined_query = f"""
     WITH user_demographics AS (
         SELECT 
             user_pseudo_id,
@@ -257,30 +257,43 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
         GROUP BY 1
     ),
-    raw_data AS (
+    raw_events AS (
         SELECT 
             e._TABLE_SUFFIX as suffix,
+            e.user_pseudo_id,
             IFNULL(e.ecommerce.purchase_revenue, 0) as rev,
-            CONCAT(e.user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as sid,
-            u.gender as g,
-            u.age as a
+            (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+            u.gender,
+            u.age
         FROM `sidiz-458301.analytics_487246344.events_*` e
         LEFT JOIN user_demographics u ON e.user_pseudo_id = u.user_pseudo_id
         WHERE e._TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
     ),
-    proc AS (
-        SELECT suffix, rev, sid,
-               CONCAT(
-                   CASE 
-                       WHEN LOWER(g) IN ('male', 'm', '1', '남성') THEN '남성' 
-                       WHEN LOWER(g) IN ('female', 'f', '2', '여성') THEN '여성' 
-                       ELSE '기타' 
-                   END, 
-                   ' / ', 
-                   IFNULL(a, '미분류')
-               ) as d
-        FROM raw_data
+    final_grouped AS (
+        SELECT 
+            CONCAT(
+                CASE 
+                    WHEN LOWER(gender) IN ('male', 'm', '1', '남성') THEN '남성' 
+                    WHEN LOWER(gender) IN ('female', 'f', '2', '여성') THEN '여성' 
+                    ELSE '기타' 
+                END, ' / ', IFNULL(age, '미분류')
+            ) as d,
+            -- 매출 계산
+            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN rev ELSE 0 END) as curr_rev,
+            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN rev ELSE 0 END) as prev_rev,
+            -- 세션 계산 (중복 제거)
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END) as curr_ses,
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END) as prev_ses
+        FROM raw_events
+        GROUP BY 1
     )
+    SELECT 
+        d, curr_rev, prev_rev, curr_rev - prev_rev, 
+        ROUND(SAFE_DIVIDE((curr_rev - prev_rev) * 100, prev_rev), 1),
+        curr_ses, prev_ses, curr_ses - prev_ses,
+        ROUND(SAFE_DIVIDE((curr_ses - prev_ses) * 100, prev_ses), 1)
+    FROM final_grouped
+    ORDER BY curr_rev DESC LIMIT 10
     """
 
     # --- 여기서부터 중요: 변수 선언 누락 방지 ---
@@ -398,31 +411,37 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     """
     
     try:
+        # 1. 각 쿼리 실행하여 데이터프레임으로 변환
         product_df = client.query(product_query).to_dataframe()
         channel_df = client.query(channel_query).to_dataframe()
         demo_df = client.query(demo_query).to_dataframe()
         device_df = client.query(device_query).to_dataframe()
-        demographics_df = client.query(demographics_query).to_dataframe()
         channel_sessions_df = client.query(channel_sessions_query).to_dataframe()
-        demographics_sessions_df = client.query(demographics_sessions_query).to_dataframe()
         
-        # 컬럼명을 한글로 변경 (쿼리 후)
+        # [핵심 수정] 인구통계는 통합 쿼리 하나만 실행
+        demographics_combined_df = client.query(demographics_combined_query).to_dataframe()
+        
+        # 2. 컬럼명 한글화
         product_df.columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
         channel_df.columns = ['채널', '현재매출', '이전매출', '매출변화', '증감율']
         demo_df.columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
         device_df.columns = ['디바이스', '현재매출', '이전매출', '매출변화', '증감율']
-        demographics_df.columns = ['인구통계', '현재매출', '이전매출', '매출변화', '증감율']
         channel_sessions_df.columns = ['채널', '현재세션', '이전세션', '세션변화', '증감율']
-        demographics_sessions_df.columns = ['인구통계', '현재세션', '이전세션', '세션변화', '증감율']
         
+        # [핵심 수정] 통합 쿼리 컬럼명 (9개 컬럼 순서 주의)
+        demographics_combined_df.columns = [
+            '인구통계', '현재매출', '이전매출', '매출변화', '매출증감율', 
+            '현재세션', '이전세션', '세션변화', '세션증감율'
+        ]
+        
+        # 3. 결과 반환 (UI에서 부르는 키값 유지)
         return {
             'product': product_df,
             'channel_revenue': channel_df,
             'channel_sessions': channel_sessions_df,
             'demo': demo_df,
             'device': device_df,
-            'demographics_revenue': demographics_df,
-            'demographics_sessions': demographics_sessions_df
+            'demographics_combined': demographics_combined_df # 통합된 데이터 전달
         }
     except Exception as e:
         st.error(f"⚠️ 인사이트 데이터 오류: {e}")
