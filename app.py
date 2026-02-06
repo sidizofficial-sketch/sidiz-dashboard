@@ -251,13 +251,14 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     WITH current_demographics AS (
         SELECT 
             CONCAT(
-                COALESCE(
-                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'gender' LIMIT 1),
-                    'Unknown'
-                ),
+                CASE 
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'male' THEN '남성'
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'female' THEN '여성'
+                    ELSE COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), 'Unknown')
+                END,
                 ' / ',
                 COALESCE(
-                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'age_group' LIMIT 1),
+                    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1),
                     'Unknown'
                 )
             ) as demographic,
@@ -270,13 +271,14 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     previous_demographics AS (
         SELECT 
             CONCAT(
-                COALESCE(
-                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'gender' LIMIT 1),
-                    'Unknown'
-                ),
+                CASE 
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'male' THEN '남성'
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'female' THEN '여성'
+                    ELSE COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), 'Unknown')
+                END,
                 ' / ',
                 COALESCE(
-                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'age_group' LIMIT 1),
+                    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1),
                     'Unknown'
                 )
             ) as demographic,
@@ -294,7 +296,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         ROUND(SAFE_DIVIDE((IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) * 100, IFNULL(p.revenue, 0)), 1) as change_pct
     FROM current_demographics c
     FULL OUTER JOIN previous_demographics p ON c.demographic = p.demographic
-    WHERE COALESCE(c.demographic, p.demographic) != 'Unknown / Unknown'
+    WHERE COALESCE(c.demographic, p.demographic) NOT IN ('Unknown / Unknown', 'null / Unknown', 'Unknown / null')
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
     LIMIT 10
     """
@@ -340,13 +342,14 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     WITH current_demographics AS (
         SELECT 
             CONCAT(
-                COALESCE(
-                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'gender' LIMIT 1),
-                    'Unknown'
-                ),
+                CASE 
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'male' THEN '남성'
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'female' THEN '여성'
+                    ELSE COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), 'Unknown')
+                END,
                 ' / ',
                 COALESCE(
-                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'age_group' LIMIT 1),
+                    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1),
                     'Unknown'
                 )
             ) as demographic,
@@ -361,13 +364,14 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     previous_demographics AS (
         SELECT 
             CONCAT(
-                COALESCE(
-                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'gender' LIMIT 1),
-                    'Unknown'
-                ),
+                CASE 
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'male' THEN '남성'
+                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'female' THEN '여성'
+                    ELSE COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), 'Unknown')
+                END,
                 ' / ',
                 COALESCE(
-                    (SELECT value.string_value FROM UNNEST(user_properties) WHERE key = 'age_group' LIMIT 1),
+                    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1),
                     'Unknown'
                 )
             ) as demographic,
@@ -387,7 +391,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         ROUND(SAFE_DIVIDE((IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) * 100, IFNULL(p.sessions, 0)), 1) as change_pct
     FROM current_demographics c
     FULL OUTER JOIN previous_demographics p ON c.demographic = p.demographic
-    WHERE COALESCE(c.demographic, p.demographic) != 'Unknown / Unknown'
+    WHERE COALESCE(c.demographic, p.demographic) NOT IN ('Unknown / Unknown', 'null / Unknown', 'Unknown / null')
     ORDER BY ABS(IFNULL(c.sessions, 0) - IFNULL(p.sessions, 0)) DESC
     LIMIT 10
     """
