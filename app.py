@@ -145,21 +145,33 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     demo_query = channel_query.replace("CONCAT(traffic_source.source, ' / ', traffic_source.medium)", "CONCAT(geo.country, ' / ', geo.city)")
     device_query = channel_query.replace("CONCAT(traffic_source.source, ' / ', traffic_source.medium)", "device.category")
 
-    # 4. 인구통계 베이스
+# 4. 인구통계 베이스 (루커 스튜디오 설정에 맞춰 u_gender, u_age로 수정)
     demographics_base = f"""
     WITH raw_data AS (
         SELECT _TABLE_SUFFIX as suffix,
                IFNULL(ecommerce.purchase_revenue, 0) as rev,
                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as sid,
-               COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'gender' LIMIT 1), 'Unknown') as g,
-               COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'age' LIMIT 1), 'Unknown') as a
+               -- 루커 스튜디오와 동일한 파라미터명 사용
+               COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), 'Unknown') as g,
+               COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1), 'Unknown') as a
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}' AND event_name = 'common_dl'
+        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+          -- 구매 데이터가 이미 루커에 나오므로 purchase와 page_view를 모두 포함하여 데이터 확보
+          AND event_name IN ('purchase', 'page_view', 'common_dl')
     ),
     proc AS (
         SELECT suffix, rev, sid,
-               CONCAT(CASE WHEN g IN ('male','M') THEN '남성' WHEN g IN ('female','F') THEN '여성' ELSE g END, ' / ', a) as d
-        FROM raw_data WHERE g != 'Unknown' OR a != 'Unknown'
+               CONCAT(
+                   CASE 
+                       WHEN g IN ('male', 'M') THEN '남성' 
+                       WHEN g IN ('female', 'F') THEN '여성' 
+                       ELSE g 
+                   END, 
+                   ' / ', 
+                   a
+               ) as d
+        FROM raw_data 
+        WHERE g != 'Unknown' AND a != 'Unknown' -- 정보가 있는 데이터만 표시
     )
     """
 
