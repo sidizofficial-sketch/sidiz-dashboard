@@ -166,12 +166,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END),
         COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END) - COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END),
         ROUND(SAFE_DIVIDE((COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END) - COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END)) * 100, COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END)), 1)
-    FROM proc 
-    GROUP BY 1 
-    HAVING SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN rev ELSE 0 END) > 0 
-       OR COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN sid END) > 0
-    ORDER BY 2 DESC 
-    LIMIT 10
+    FROM proc GROUP BY 1 ORDER BY 2 DESC LIMIT 10
     """
 
     # 3. 기타 쿼리들 (제품, 채널, 지역, 디바이스)
