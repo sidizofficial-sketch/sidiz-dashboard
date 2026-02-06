@@ -110,21 +110,35 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
     st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
 
-    # 제품별 매출 변화 (제품명 기준 통합 + 정규화 + 세션/수량 추가)
+    # 제품별 매출 변화 (view_item 기반 세션 + IGNORE NULLS + 세션/수량 추가)
     product_query = f"""
-    WITH product_normalized AS (
+    WITH base_events AS (
         SELECT 
-            UPPER(TRIM(REGEXP_REPLACE(item.item_name, r'\\s+', ' '))) as normalized_name,
-            item.item_name as original_name,
-            _TABLE_SUFFIX as suffix,
             user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
-            ecommerce.purchase_revenue,
-            item.quantity
+            event_name,
+            event_timestamp,
+            _TABLE_SUFFIX as suffix,
+            -- 제품 정보
+            item.item_name,
+            item.quantity,
+            item.price * item.quantity as item_revenue
         FROM `sidiz-458301.analytics_487246344.events_*`,
         UNNEST(items) as item
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-        AND event_name = 'purchase'
+        AND event_name IN ('purchase', 'view_item')
+    ),
+    product_normalized AS (
+        SELECT 
+            UPPER(TRIM(REGEXP_REPLACE(item_name, r'\\s+', ' '))) as normalized_name,
+            item_name as original_name,
+            suffix,
+            user_pseudo_id,
+            session_id,
+            event_name,
+            quantity,
+            item_revenue
+        FROM base_events
     ),
     latest_names AS (
         SELECT 
@@ -145,12 +159,20 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     aggregated AS (
         SELECT 
             normalized_name,
-            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN purchase_revenue ELSE 0 END) as current_revenue,
-            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN purchase_revenue ELSE 0 END) as previous_revenue,
-            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as current_sessions,
-            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as previous_sessions,
-            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN quantity ELSE 0 END) as current_quantity,
-            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN quantity ELSE 0 END) as previous_quantity
+            -- 현재 기간 매출 (purchase 이벤트)
+            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' THEN COALESCE(item_revenue, 0) ELSE 0 END) as current_revenue,
+            -- 이전 기간 매출
+            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' THEN COALESCE(item_revenue, 0) ELSE 0 END) as previous_revenue,
+            -- 현재 기간 세션 (view_item 이벤트 기준, 중복 제거)
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'view_item' 
+                THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as current_sessions,
+            -- 이전 기간 세션
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'view_item' 
+                THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as previous_sessions,
+            -- 현재 기간 수량
+            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' THEN COALESCE(quantity, 0) ELSE 0 END) as current_quantity,
+            -- 이전 기간 수량
+            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' THEN COALESCE(quantity, 0) ELSE 0 END) as previous_quantity
         FROM product_normalized
         GROUP BY normalized_name
     )
@@ -167,6 +189,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     FROM aggregated a
     LEFT JOIN latest_names ln ON a.normalized_name = ln.normalized_name
     LEFT JOIN fallback_names fn ON a.normalized_name = fn.normalized_name
+    WHERE COALESCE(a.current_revenue, 0) > 0 OR COALESCE(a.previous_revenue, 0) > 0
     ORDER BY COALESCE(a.current_revenue, 0) DESC
     LIMIT 20
     """
