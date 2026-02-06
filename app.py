@@ -105,6 +105,10 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     
     s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
     s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
+    
+    # 디버그: 날짜 범위 출력
+    st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
+    st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
 
     # 제품별 매출 변화
     product_query = f"""
@@ -415,6 +419,8 @@ def get_insight_data(start_c, end_c, start_p, end_p):
 
     try:
         # 쿼리 실행
+        st.sidebar.write("🔄 쿼리 실행 중...")
+        
         results = {
             'product': client.query(product_query).to_dataframe(),
             'channel_revenue': client.query(channel_query).to_dataframe(),
@@ -423,6 +429,14 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             'device': client.query(device_query).to_dataframe(),
             'demographics_combined': client.query(demographics_combined_query).to_dataframe()
         }
+        
+        # 디버그: 각 데이터프레임 크기 출력
+        st.sidebar.write("### 📊 데이터 로드 결과")
+        for key, df in results.items():
+            if df is not None:
+                st.sidebar.write(f"- {key}: {len(df)}개 행")
+            else:
+                st.sidebar.write(f"- {key}: ❌ None")
         
         # NaN을 0으로 명시적 변환 (각 데이터프레임별로 - 매우 중요!)
         for key in results:
@@ -439,9 +453,14 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         results['device'].columns = ['디바이스', '현재매출', '이전매출', '매출변화', '증감율']
         results['demographics_combined'].columns = ['인구통계', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
         
+        st.sidebar.write("✅ 데이터 로드 완료")
+        
         return results
     except Exception as e:
+        st.sidebar.error(f"❌ 쿼리 실행 오류: {str(e)}")
         st.error(f"⚠️ 인사이트 데이터 오류: {e}")
+        import traceback
+        st.sidebar.code(traceback.format_exc())
         return None
 
 # -------------------------------------------------
