@@ -145,41 +145,39 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     demo_query = channel_query.replace("CONCAT(traffic_source.source, ' / ', traffic_source.medium)", "CONCAT(geo.country, ' / ', geo.city)")
     device_query = channel_query.replace("CONCAT(traffic_source.source, ' / ', traffic_source.medium)", "device.category")
 
-# 4. 인구통계 베이스 (필터링 완화 및 데이터 추출 로직 대폭 강화)
+# 4. 인구통계 베이스 (파라미터 키 자동 매칭 및 추출 로직 최적화)
     demographics_base = f"""
     WITH raw_data AS (
         SELECT _TABLE_SUFFIX as suffix,
                IFNULL(ecommerce.purchase_revenue, 0) as rev,
                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as sid,
-               -- u_gender가 string이 아닐 경우를 대비해 COALESCE 중첩 사용
-               IFNULL(
-                 (SELECT COALESCE(value.string_value, CAST(value.int_value AS STRING), CAST(value.double_value AS STRING)) 
-                  FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), 
-                 'Unknown'
-               ) as g,
-               -- u_age가 string이 아닐 경우를 대비
-               IFNULL(
-                 (SELECT COALESCE(value.string_value, CAST(value.int_value AS STRING), CAST(value.double_value AS STRING)) 
-                  FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1), 
-                 'Unknown'
-               ) as a
+               -- 성별: u_gender와 gender 둘 다 체크
+               (SELECT COALESCE(value.string_value, CAST(value.int_value AS STRING)) 
+                FROM UNNEST(event_params) 
+                WHERE key IN ('u_gender', 'gender', 'Gender', 'GENDER') 
+                AND (value.string_value IS NOT NULL OR value.int_value IS NOT NULL)
+                LIMIT 1) as g,
+               -- 연령: u_age와 age 둘 다 체크
+               (SELECT COALESCE(value.string_value, CAST(value.int_value AS STRING)) 
+                FROM UNNEST(event_params) 
+                WHERE key IN ('u_age', 'age', 'Age', 'AGE') 
+                AND (value.string_value IS NOT NULL OR value.int_value IS NOT NULL)
+                LIMIT 1) as a
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-          -- 특정 이벤트에 국한하지 않고 모든 이벤트에서 유저 속성을 추출
     ),
     proc AS (
         SELECT suffix, rev, sid,
                CONCAT(
                    CASE 
-                       WHEN g IN ('male', 'M', '1') THEN '남성' 
-                       WHEN g IN ('female', 'F', '2') THEN '여성' 
-                       ELSE '기타/미분류' 
+                       WHEN LOWER(g) IN ('male', 'm', '1', '남성') THEN '남성' 
+                       WHEN LOWER(g) IN ('female', 'f', '2', '여성') THEN '여성' 
+                       ELSE '기타' 
                    END, 
                    ' / ', 
-                   CASE WHEN a IS NULL OR a = 'Unknown' THEN '연령미상' ELSE a END
+                   IFNULL(a, '미분류')
                ) as d
-        FROM raw_data 
-        -- WHERE 조건을 제거하여 '기타/미분류' 데이터라도 나오게 함
+        FROM raw_data
     )
     """
 
