@@ -141,11 +141,11 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     GROUP BY 1 ORDER BY 4 DESC LIMIT 10
     """
 
-    # 3. 지역/디바이스 (기존 유지하되 간소화 가능하나 일단 유지)
+    # 3. 지역/디바이스
     demo_query = channel_query.replace("CONCAT(traffic_source.source, ' / ', traffic_source.medium)", "CONCAT(geo.country, ' / ', geo.city)")
     device_query = channel_query.replace("CONCAT(traffic_source.source, ' / ', traffic_source.medium)", "device.category")
 
-    # 4. 인구통계 베이스 (common_dl 기반 핵심 수정)
+    # 4. 인구통계 베이스
     demographics_base = f"""
     WITH raw_data AS (
         SELECT _TABLE_SUFFIX as suffix,
@@ -188,7 +188,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}' GROUP BY 1 LIMIT 10
     """
 
-try:
+    try:
         results = {}
         queries = {
             'product': product_query, 'channel_revenue': channel_query, 'demo': demo_query,
@@ -198,8 +198,6 @@ try:
         
         for key, q in queries.items():
             df = client.query(q).to_dataframe()
-            
-            # 각 데이터프레임의 성격에 맞게 컬럼명 복구
             if key == 'product':
                 df.columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
             elif key == 'channel_revenue':
@@ -214,7 +212,6 @@ try:
                 df.columns = ['인구통계', '현재매출', '이전매출', '매출변화', '증감율']
             elif key == 'demographics_sessions':
                 df.columns = ['인구통계', '현재세션', '이전세션', '세션변화', '증감율']
-            
             results[key] = df
             
         return results
