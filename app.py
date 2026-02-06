@@ -246,10 +246,9 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
     """
     
-# 4. 인구통계 베이스 (유저별 속성 전파 로직 적용 - 매출 데이터 매칭 해결)
+# 4. 인구통계 베이스 (유저별 속성 전파 로직)
     demographics_base = f"""
     WITH user_demographics AS (
-        -- 유저별로 가장 최근에 확인된 성별과 연령 정보를 추출
         SELECT 
             user_pseudo_id,
             MAX((SELECT COALESCE(value.string_value, CAST(value.int_value AS STRING)) FROM UNNEST(event_params) WHERE key IN ('u_gender', 'gender') LIMIT 1)) as gender,
@@ -282,6 +281,23 @@ def get_insight_data(start_c, end_c, start_p, end_p):
                ) as d
         FROM raw_data
     )
+    """
+
+    # --- 여기서부터 중요: 변수 선언 누락 방지 ---
+    demographics_query = demographics_base + f"""
+    SELECT d, SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN rev ELSE 0 END),
+           SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN rev ELSE 0 END),
+           SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN rev ELSE 0 END) - SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN rev ELSE 0 END),
+           ROUND(SAFE_DIVIDE((SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN rev ELSE 0 END) - SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN rev ELSE 0 END)) * 100, SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN rev ELSE 0 END)), 1)
+    FROM proc GROUP BY 1 ORDER BY 4 DESC LIMIT 10
+    """
+
+    demographics_sessions_query = demographics_base + f"""
+    SELECT d, COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN sid END),
+           COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN sid END),
+           COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN sid END) - COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN sid END),
+           ROUND(SAFE_DIVIDE((COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN sid END) - COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN sid END)) * 100, COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN sid END)), 1)
+    FROM proc GROUP BY 1 ORDER BY 4 DESC LIMIT 10
     """
     
     # 채널별 유입(세션) 변화
