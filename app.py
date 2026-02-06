@@ -297,7 +297,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     """
 
     # --- 여기서부터 중요: 변수 선언 누락 방지 ---
-    emographics_combined_query = demographics_base + f"""
+    demographics_combined_query = demographics_base + f"""
     SELECT d as target_col, 
            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN rev ELSE 0 END),
            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN rev ELSE 0 END),
