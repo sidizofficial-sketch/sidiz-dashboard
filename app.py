@@ -390,30 +390,24 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         results['product'].columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
         
         # 제품명 정규화 및 재집계 (중복 완전 제거)
-        if not results['product'].empty:
-            product_df = results['product'].copy()
-            # 제품명 정규화 (공백 제거, 대문자 변환)
-            product_df['정규화_제품명'] = product_df['제품명'].str.strip().str.upper().str.replace(r'\s+', ' ', regex=True)
+        if 'product' in results and not results['product'].empty:
+            pdf = results['product']
+            # 1. 이름 정규화 (공백 통합 및 대문자화)
+            pdf['match_name'] = pdf['제품명'].str.replace(r'\s+', ' ', regex=True).str.strip().str.upper()
             
-            # 정규화된 제품명 기준으로 재집계
-            aggregated = product_df.groupby('정규화_제품명', as_index=False).agg({
-                '제품명': 'first',  # 첫 번째 원본 이름 사용
+            # 2. 그룹화하여 수치 데이터 합산
+            pdf_agg = pdf.groupby('match_name').agg({
+                '제품명': 'first',      # 대표 이름 하나 선택
                 '현재매출': 'sum',
-                '이전매출': 'sum',
-                '매출변화': 'sum'
-            })
+                '이전매출': 'sum'
+            }).reset_index(drop=True)
             
-            # 증감율 재계산
-            aggregated['증감율'] = aggregated.apply(
-                lambda row: round((row['매출변화'] / row['이전매출'] * 100) if row['이전매출'] > 0 else 0, 1),
-                axis=1
-            )
+            # 3. 합산된 데이터를 바탕으로 변화량과 증감율 "재계산"
+            pdf_agg['매출변화'] = pdf_agg['현재매출'] - pdf_agg['이전매출']
+            pdf_agg['증감율'] = (pdf_agg['매출변화'] / pdf_agg['이전매출'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0)
             
-            # 매출변화 절대값 기준 정렬
-            aggregated = aggregated.sort_values('매출변화', key=abs, ascending=False).head(10)
-            
-            # 정규화 컬럼 제거 및 최종 결과
-            results['product'] = aggregated[['제품명', '현재매출', '이전매출', '매출변화', '증감율']].reset_index(drop=True)
+            # 4. 매출 변화 절대값 기준으로 재정렬 후 저장
+            results['product'] = pdf_agg.sort_values(by='매출변화', key=abs, ascending=False).reset_index(drop=True)
         
         results['channel_combined'].columns = ['채널', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
         results['demo'].columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
@@ -725,12 +719,21 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                             return "-"
                     
                     with tab1:
-                        df = insight_data['product'].copy()
-                        df['현재매출'] = df['현재매출'].apply(format_currency)
-                        df['이전매출'] = df['이전매출'].apply(format_currency)
-                        df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
-                        df['증감율'] = df['증감율'].apply(format_percent)
-                        st.dataframe(df, use_container_width=True, height=400)
+                        if 'product' in insight_data and not insight_data['product'].empty:
+                            # 가공을 위한 복사본 생성
+                            display_df = insight_data['product'].copy()
+                            
+                            # 표시용 포맷팅 (순서 중요: 계산이 모두 끝난 후 문자열로 변환)
+                            display_df['현재매출'] = display_df['현재매출'].apply(format_currency)
+                            display_df['이전매출'] = display_df['이전매출'].apply(format_currency)
+                            display_df['매출변화'] = display_df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
+                            display_df['증감율'] = display_df['증감율'].apply(lambda x: f"{x:+.1f}%")
+                            
+                            # 불필요한 보조 컬럼 제외하고 표시
+                            cols_to_show = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
+                            st.dataframe(display_df[cols_to_show], use_container_width=True, height=400)
+                        else:
+                            st.info("데이터가 없습니다.")
                     
                     with tab2:
                         df = insight_data['channel_combined'].copy()
