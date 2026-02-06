@@ -173,49 +173,54 @@ def get_insight_data(start_c, end_c, start_p, end_p):
 
     # 채널별 매출 & 세션 변화 (통합 쿼리 - 단일 소스)
     channel_combined_query = f"""
-    WITH session_sources AS (
+    WITH base_events AS (
         SELECT 
             user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
-            _TABLE_SUFFIX as suffix,
             event_name,
             ecommerce.purchase_revenue,
-            LOWER(COALESCE(
-                NULLIF(TRIM(collected_traffic_source.manual_source), ''),
-                NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)), ''),
-                NULLIF(TRIM(traffic_source.source), ''),
-                '(direct)'
-            )) as source,
-            LOWER(COALESCE(
-                NULLIF(TRIM(collected_traffic_source.manual_medium), ''),
-                NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1)), ''),
-                NULLIF(TRIM(traffic_source.medium), ''),
-                '(none)'
-            )) as medium,
+            -- 이벤트 파라미터에서만 소스/매체 추출 (traffic_source 사용 중단)
+            LOWER(NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)), '')) as raw_source,
+            LOWER(NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1)), '')) as raw_medium,
             event_timestamp,
-            ROW_NUMBER() OVER (PARTITION BY user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) ORDER BY event_timestamp ASC) as event_order
+            _TABLE_SUFFIX as suffix
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
     ),
-    session_first_source AS (
+    session_mapping AS (
         SELECT 
             user_pseudo_id,
             session_id,
             suffix,
             event_name,
             purchase_revenue,
-            FIRST_VALUE(source) OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) as session_source,
-            FIRST_VALUE(medium) OVER (PARTITION BY user_pseudo_id, session_id ORDER BY event_order) as session_medium
-        FROM session_sources
+            -- 세션 내에서 NULL이 아닌 첫 번째 소스 값을 찾아 전파 (IGNORE NULLS)
+            COALESCE(
+                FIRST_VALUE(raw_source IGNORE NULLS) OVER (
+                    PARTITION BY user_pseudo_id, session_id 
+                    ORDER BY event_timestamp 
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                ),
+                '(direct)'
+            ) as final_source,
+            COALESCE(
+                FIRST_VALUE(raw_medium IGNORE NULLS) OVER (
+                    PARTITION BY user_pseudo_id, session_id 
+                    ORDER BY event_timestamp 
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                ),
+                '(none)'
+            ) as final_medium
+        FROM base_events
     ),
     events_with_channel AS (
         SELECT 
             suffix,
-            CONCAT(session_source, ' / ', session_medium) as channel,
+            CONCAT(final_source, ' / ', final_medium) as channel,
             CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) as unique_session,
             event_name,
             purchase_revenue
-        FROM session_first_source
+        FROM session_mapping
     ),
     aggregated AS (
         SELECT 
@@ -238,6 +243,13 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         COALESCE(current_revenue, 0) - COALESCE(previous_revenue, 0) as revenue_change,
         ROUND(SAFE_DIVIDE((COALESCE(current_revenue, 0) - COALESCE(previous_revenue, 0)) * 100, NULLIF(COALESCE(previous_revenue, 0), 0)), 1) as revenue_change_pct,
         COALESCE(current_sessions, 0) as current_sessions,
+        COALESCE(previous_sessions, 0) as previous_sessions,
+        COALESCE(current_sessions, 0) - COALESCE(previous_sessions, 0) as sessions_change,
+        ROUND(SAFE_DIVIDE((COALESCE(current_sessions, 0) - COALESCE(previous_sessions, 0)) * 100, NULLIF(COALESCE(previous_sessions, 0), 0)), 1) as sessions_change_pct
+    FROM aggregated
+    ORDER BY COALESCE(current_revenue, 0) DESC
+    LIMIT 20
+    """
         COALESCE(previous_sessions, 0) as previous_sessions,
         COALESCE(current_sessions, 0) - COALESCE(previous_sessions, 0) as sessions_change,
         ROUND(SAFE_DIVIDE((COALESCE(current_sessions, 0) - COALESCE(previous_sessions, 0)) * 100, NULLIF(COALESCE(previous_sessions, 0), 0)), 1) as sessions_change_pct
