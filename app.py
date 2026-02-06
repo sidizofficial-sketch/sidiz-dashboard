@@ -379,7 +379,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     LIMIT 10
     """
         
-        # 컬럼명을 한글로 변경 (쿼리 후)
+# 컬럼명을 한글로 변경 (이 줄의 시작 위치를 위쪽 client.query들과 똑같이 맞추세요)
         product_df.columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
         channel_df.columns = ['채널', '현재매출', '이전매출', '매출변화', '증감율']
         demo_df.columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
