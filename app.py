@@ -340,6 +340,16 @@ with st.sidebar:
     comp_date = st.date_input("비교 기간", [today - timedelta(days=14), today - timedelta(days=8)])
     time_unit = st.selectbox("추이 분석 단위", ["일별", "주별", "월별"])
 
+# 실제 데이터의 카테고리명 확인용 (임시)
+if st.checkbox("실제 카테고리명 샘플 보기"):
+    debug_query = """
+    SELECT DISTINCT item.item_category, item.item_name
+    FROM `sidiz-458301.analytics_487246344.events_*`, UNNEST(items) as item
+    WHERE event_name = 'purchase'
+    LIMIT 20
+    """
+    df_debug = client.query(debug_query).to_dataframe()
+    st.table(df_debug)
 if len(curr_date) == 2 and len(comp_date) == 2:
     summary_df, ts_df = get_dashboard_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1], time_unit)
     
