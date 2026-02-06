@@ -292,12 +292,20 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     FROM proc GROUP BY 1 ORDER BY 4 DESC LIMIT 10
     """
 
-    demographics_sessions_query = demographics_base + f"""
-    SELECT d, COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN sid END),
-           COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN sid END),
-           COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN sid END) - COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN sid END),
-           ROUND(SAFE_DIVIDE((COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN sid END) - COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN sid END)) * 100, COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN sid END)), 1)
-    FROM proc GROUP BY 1 ORDER BY 4 DESC LIMIT 10
+demographics_sessions_query = demographics_base + f"""
+    SELECT 
+        d, 
+        COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN sid END) as curr,
+        COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN sid END) as prev,
+        COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN sid END) - COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN sid END) as diff,
+        ROUND(SAFE_DIVIDE(
+            (COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN sid END) - COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN sid END)) * 100, 
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN sid END)
+        ), 1) as pct
+    FROM proc 
+    GROUP BY 1 
+    ORDER BY curr DESC  -- 세션이 많은 순서대로 정렬
+    LIMIT 10
     """
     
     # 채널별 유입(세션) 변화
