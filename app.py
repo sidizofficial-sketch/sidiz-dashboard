@@ -263,58 +263,63 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
     """
 
-    # 인구통계별 매출 & 세션 변화 (통합 쿼리 - 완전히 독립적으로 작성)
+    # 인구통계별 매출 & 세션 변화 (Single Pass Aggregation - 완전 통합)
     demographics_combined_query = f"""
-    WITH demographics_revenue AS (
+    WITH base_events AS (
         SELECT 
-            CONCAT(
-                CASE 
-                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'male' THEN '남성'
-                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'female' THEN '여성'
-                    ELSE '기타'
-                END,
-                ' / ',
-                COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1), '미분류')
-            ) as demographic,
             _TABLE_SUFFIX as suffix,
-            SUM(ecommerce.purchase_revenue) as revenue
+            user_pseudo_id,
+            event_name,
+            ecommerce.purchase_revenue,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), '')) as gender_raw,
+            COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1), '미분류') as age_raw
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-        AND event_name = 'purchase'
-        GROUP BY 1, 2
     ),
-    demographics_sessions AS (
+    normalized_demographics AS (
         SELECT 
-            CONCAT(
-                CASE 
-                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'male' THEN '남성'
-                    WHEN (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1) = 'female' THEN '여성'
-                    ELSE '기타'
-                END,
-                ' / ',
-                COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1), '미분류')
-            ) as demographic,
-            _TABLE_SUFFIX as suffix,
-            COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions
-        FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-        GROUP BY 1, 2
+            suffix,
+            user_pseudo_id,
+            session_id,
+            event_name,
+            purchase_revenue,
+            CASE 
+                WHEN gender_raw IN ('male', 'm', '남성', '1') THEN '남성'
+                WHEN gender_raw IN ('female', 'f', '여성', '2') THEN '여성'
+                ELSE '기타'
+            END as gender_normalized,
+            age_raw
+        FROM base_events
+        WHERE gender_raw != '' OR age_raw != '미분류'
+    ),
+    aggregated AS (
+        SELECT 
+            CONCAT(gender_normalized, ' / ', age_raw) as demographic,
+            -- 현재 기간 매출
+            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' THEN IFNULL(purchase_revenue, 0) ELSE 0 END) as current_revenue,
+            -- 이전 기간 매출
+            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' THEN IFNULL(purchase_revenue, 0) ELSE 0 END) as previous_revenue,
+            -- 현재 기간 세션
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as current_sessions,
+            -- 이전 기간 세션
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as previous_sessions
+        FROM normalized_demographics
+        GROUP BY 1
+        HAVING current_revenue > 0 OR previous_revenue > 0 OR current_sessions > 0 OR previous_sessions > 0
     )
     SELECT 
-        COALESCE(r.demographic, s.demographic) as demographic,
-        SUM(CASE WHEN r.suffix BETWEEN '{s_c}' AND '{e_c}' THEN IFNULL(r.revenue, 0) ELSE 0 END) as current_revenue,
-        SUM(CASE WHEN r.suffix BETWEEN '{s_p}' AND '{e_p}' THEN IFNULL(r.revenue, 0) ELSE 0 END) as previous_revenue,
-        SUM(CASE WHEN r.suffix BETWEEN '{s_c}' AND '{e_c}' THEN IFNULL(r.revenue, 0) ELSE 0 END) - SUM(CASE WHEN r.suffix BETWEEN '{s_p}' AND '{e_p}' THEN IFNULL(r.revenue, 0) ELSE 0 END) as revenue_change,
-        ROUND(SAFE_DIVIDE((SUM(CASE WHEN r.suffix BETWEEN '{s_c}' AND '{e_c}' THEN IFNULL(r.revenue, 0) ELSE 0 END) - SUM(CASE WHEN r.suffix BETWEEN '{s_p}' AND '{e_p}' THEN IFNULL(r.revenue, 0) ELSE 0 END)) * 100, SUM(CASE WHEN r.suffix BETWEEN '{s_p}' AND '{e_p}' THEN IFNULL(r.revenue, 0) ELSE 0 END)), 1) as revenue_pct,
-        SUM(CASE WHEN s.suffix BETWEEN '{s_c}' AND '{e_c}' THEN IFNULL(s.sessions, 0) ELSE 0 END) as current_sessions,
-        SUM(CASE WHEN s.suffix BETWEEN '{s_p}' AND '{e_p}' THEN IFNULL(s.sessions, 0) ELSE 0 END) as previous_sessions,
-        SUM(CASE WHEN s.suffix BETWEEN '{s_c}' AND '{e_c}' THEN IFNULL(s.sessions, 0) ELSE 0 END) - SUM(CASE WHEN s.suffix BETWEEN '{s_p}' AND '{e_p}' THEN IFNULL(s.sessions, 0) ELSE 0 END) as sessions_change,
-        ROUND(SAFE_DIVIDE((SUM(CASE WHEN s.suffix BETWEEN '{s_c}' AND '{e_c}' THEN IFNULL(s.sessions, 0) ELSE 0 END) - SUM(CASE WHEN s.suffix BETWEEN '{s_p}' AND '{e_p}' THEN IFNULL(s.sessions, 0) ELSE 0 END)) * 100, SUM(CASE WHEN s.suffix BETWEEN '{s_p}' AND '{e_p}' THEN IFNULL(s.sessions, 0) ELSE 0 END)), 1) as sessions_pct
-    FROM demographics_revenue r
-    FULL OUTER JOIN demographics_sessions s ON r.demographic = s.demographic AND r.suffix = s.suffix
-    WHERE COALESCE(r.demographic, s.demographic) NOT LIKE '%기타%' AND COALESCE(r.demographic, s.demographic) NOT LIKE '%미분류%'
-    GROUP BY 1
-    HAVING current_revenue > 0 OR previous_revenue > 0
+        demographic,
+        current_revenue,
+        previous_revenue,
+        current_revenue - previous_revenue as revenue_change,
+        ROUND(SAFE_DIVIDE((current_revenue - previous_revenue) * 100, previous_revenue), 1) as revenue_change_pct,
+        current_sessions,
+        previous_sessions,
+        current_sessions - previous_sessions as sessions_change,
+        ROUND(SAFE_DIVIDE((current_sessions - previous_sessions) * 100, previous_sessions), 1) as sessions_change_pct
+    FROM aggregated
+    WHERE demographic NOT LIKE '%기타%'
     ORDER BY ABS(revenue_change) DESC
     LIMIT 10
     """
@@ -328,6 +333,11 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             'device': client.query(device_query).to_dataframe(),
             'demographics_combined': client.query(demographics_combined_query).to_dataframe()
         }
+        
+        # NaN을 0으로 명시적 변환 (각 데이터프레임별로)
+        for key in results:
+            if results[key] is not None and not results[key].empty:
+                results[key] = results[key].fillna(0)
         
         # 컬럼명 정확히 매칭
         results['product'].columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율']
@@ -589,15 +599,30 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                         "디바이스별 분석"
                     ])
                     
-                    # 숫자 포맷 함수
+                    # 숫자 포맷 함수 (안전한 예외 처리 포함)
                     def format_currency(val):
-                        return f"₩{val:,.0f}"
+                        try:
+                            if pd.isna(val) or val == 0:
+                                return "₩0"
+                            return f"₩{val:,.0f}"
+                        except:
+                            return "₩0"
                     
                     def format_number(val):
-                        return f"{val:,.0f}"
+                        try:
+                            if pd.isna(val) or val == 0:
+                                return "0"
+                            return f"{val:,.0f}"
+                        except:
+                            return "0"
                     
                     def format_percent(val):
-                        return f"{val:+.1f}%" if pd.notna(val) else "-"
+                        try:
+                            if pd.isna(val):
+                                return "-"
+                            return f"{val:+.1f}%"
+                        except:
+                            return "-"
                     
                     with tab1:
                         df = insight_data['product'].copy()
