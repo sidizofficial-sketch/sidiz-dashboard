@@ -339,7 +339,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
     """
 
-    # 인구통계별 매출 & 세션 변화 (Single Pass Aggregation - 완전 통합)
+    # 인구통계별 매출 & 세션 변화 (user_properties 포함 + 필터 제거)
     demographics_combined_query = f"""
     WITH base_events AS (
         SELECT 
@@ -348,8 +348,18 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             event_name,
             ecommerce.purchase_revenue,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
-            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_gender' LIMIT 1), '')) as gender_raw,
-            COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'u_age' LIMIT 1), '미분류') as age_raw
+            -- event_params에서 성별 추출 (여러 키 시도)
+            COALESCE(
+                LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key IN ('u_gender', 'gender', 'sex', 'user_gender') LIMIT 1)),
+                LOWER((SELECT value.string_value FROM UNNEST(user_properties) WHERE key IN ('u_gender', 'gender', 'sex', 'user_gender') LIMIT 1)),
+                ''
+            ) as gender_raw,
+            -- event_params에서 연령 추출 (여러 키 시도)
+            COALESCE(
+                (SELECT value.string_value FROM UNNEST(event_params) WHERE key IN ('u_age', 'age', 'age_group', 'user_age') LIMIT 1),
+                (SELECT value.string_value FROM UNNEST(user_properties) WHERE key IN ('u_age', 'age', 'age_group', 'user_age') LIMIT 1),
+                '미분류'
+            ) as age_raw
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
     ),
@@ -363,15 +373,18 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             CASE 
                 WHEN gender_raw IN ('male', 'm', '남성', '1') THEN '남성'
                 WHEN gender_raw IN ('female', 'f', '여성', '2') THEN '여성'
-                ELSE '기타'
+                ELSE '미분류'
             END as gender_normalized,
-            age_raw
+            COALESCE(NULLIF(age_raw, ''), '미분류') as age_normalized
         FROM base_events
-        WHERE gender_raw != '' OR age_raw != '미분류'
     ),
     aggregated AS (
         SELECT 
-            CONCAT(gender_normalized, ' / ', age_raw) as demographic,
+            CONCAT(
+                COALESCE(gender_normalized, '미분류'), 
+                ' / ', 
+                COALESCE(age_normalized, '미분류')
+            ) as demographic,
             -- 현재 기간 매출
             SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' THEN IFNULL(purchase_revenue, 0) ELSE 0 END) as current_revenue,
             -- 이전 기간 매출
@@ -382,21 +395,19 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as previous_sessions
         FROM normalized_demographics
         GROUP BY 1
-        HAVING current_revenue > 0 OR previous_revenue > 0 OR current_sessions > 0 OR previous_sessions > 0
     )
     SELECT 
-        demographic,
-        current_revenue,
-        previous_revenue,
-        current_revenue - previous_revenue as revenue_change,
-        ROUND(SAFE_DIVIDE((current_revenue - previous_revenue) * 100, previous_revenue), 1) as revenue_change_pct,
-        current_sessions,
-        previous_sessions,
-        current_sessions - previous_sessions as sessions_change,
-        ROUND(SAFE_DIVIDE((current_sessions - previous_sessions) * 100, previous_sessions), 1) as sessions_change_pct
+        COALESCE(demographic, '미분류 / 미분류') as demographic,
+        IFNULL(current_revenue, 0) as current_revenue,
+        IFNULL(previous_revenue, 0) as previous_revenue,
+        IFNULL(current_revenue - previous_revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((current_revenue - previous_revenue) * 100, NULLIF(previous_revenue, 0)), 1) as revenue_change_pct,
+        IFNULL(current_sessions, 0) as current_sessions,
+        IFNULL(previous_sessions, 0) as previous_sessions,
+        IFNULL(current_sessions - previous_sessions, 0) as sessions_change,
+        ROUND(SAFE_DIVIDE((current_sessions - previous_sessions) * 100, NULLIF(previous_sessions, 0)), 1) as sessions_change_pct
     FROM aggregated
-    WHERE demographic NOT LIKE '%기타%'
-    ORDER BY ABS(revenue_change) DESC
+    ORDER BY ABS(IFNULL(revenue_change, 0)) DESC
     LIMIT 10
     """
 
@@ -434,6 +445,10 @@ def get_insight_data(start_c, end_c, start_p, end_p):
 def generate_insights(curr, prev, insight_data):
     insights = []
     
+    # insight_data 유효성 검사
+    if not insight_data:
+        return "📊 데이터 수집 중입니다. 잠시 후 다시 확인해주세요."
+    
     # 1. 전체 매출 변동
     rev_change = curr['revenue'] - prev['revenue']
     rev_pct = (rev_change / prev['revenue'] * 100) if prev['revenue'] > 0 else 0
@@ -444,7 +459,7 @@ def generate_insights(curr, prev, insight_data):
         insights.append(f"매출이 **₩{abs(rev_change):,.0f} ({abs(rev_pct):.1f}%) {direction}**했습니다.")
     
     # 2. 제품 영향 (TOP3)
-    if insight_data and 'product' in insight_data and not insight_data['product'].empty:
+    if 'product' in insight_data and insight_data['product'] is not None and not insight_data['product'].empty:
         insights.append(f"\n### 🏆 주요 제품 영향 TOP3")
         for idx, row in insight_data['product'].head(3).iterrows():
             if abs(row['매출변화']) > 500000:
@@ -452,7 +467,7 @@ def generate_insights(curr, prev, insight_data):
                 insights.append(f"**{idx+1}. {row['제품명']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['증감율']:+.1f}%)")
     
     # 3. 채널 매출 영향 (TOP3)
-    if insight_data and 'channel_revenue' in insight_data and not insight_data['channel_revenue'].empty:
+    if 'channel_revenue' in insight_data and insight_data['channel_revenue'] is not None and not insight_data['channel_revenue'].empty:
         insights.append(f"\n### 🎯 주요 채널 매출 영향 TOP3")
         for idx, row in insight_data['channel_revenue'].head(3).iterrows():
             if abs(row['매출변화']) > 300000:
@@ -460,29 +475,45 @@ def generate_insights(curr, prev, insight_data):
                 insights.append(f"**{idx+1}. {row['채널']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['증감율']:+.1f}%)")
     
     # 4. 채널 유입 영향 (TOP3)
-    if insight_data and 'channel_sessions' in insight_data and not insight_data['channel_sessions'].empty:
+    if 'channel_sessions' in insight_data and insight_data['channel_sessions'] is not None and not insight_data['channel_sessions'].empty:
         insights.append(f"\n### 🚪 주요 채널 유입 영향 TOP3")
         for idx, row in insight_data['channel_sessions'].head(3).iterrows():
             if abs(row['세션변화']) > 100:
                 direction = "↑" if row['세션변화'] > 0 else "↓"
                 insights.append(f"**{idx+1}. {row['채널']}** {direction} {abs(row['세션변화']):,.0f}세션 ({row['증감율']:+.1f}%)")
     
-    # 5. 인구통계 매출 영향 (TOP3)
-    if insight_data and 'demographics_combined' in insight_data and not insight_data['demographics_combined'].empty:
-        insights.append(f"\n### 👥 인구통계 매출 영향 TOP3")
-        for idx, row in insight_data['demographics_combined'].head(3).iterrows():
-            if abs(row['매출변화']) > 300000:
-                direction = "↑" if row['매출변화'] > 0 else "↓"
-                insights.append(f"**{idx+1}. {row['인구통계']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['매출증감율']:+.1f}%)")
+    # 5. 인구통계 매출 영향 (TOP3) - 강화된 예외 처리
+    if 'demographics_combined' in insight_data and insight_data['demographics_combined'] is not None and not insight_data['demographics_combined'].empty:
+        try:
+            # '미분류 / 미분류'가 아닌 데이터만 필터링
+            demo_df = insight_data['demographics_combined']
+            demo_df_filtered = demo_df[~demo_df['인구통계'].str.contains('미분류', na=False)]
+            
+            if not demo_df_filtered.empty and len(demo_df_filtered) > 0:
+                insights.append(f"\n### 👥 인구통계 매출 영향 TOP3")
+                for idx, row in demo_df_filtered.head(3).iterrows():
+                    if abs(row['매출변화']) > 300000:
+                        direction = "↑" if row['매출변화'] > 0 else "↓"
+                        insights.append(f"**{idx+1}. {row['인구통계']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['매출증감율']:+.1f}%)")
+        except Exception as e:
+            pass  # 인구통계 데이터 오류 시 조용히 스킵
     
-    # 6. 인구통계 유입 영향 (TOP3)
-    if insight_data and 'demographics_combined' in insight_data and not insight_data['demographics_combined'].empty:
-        insights.append(f"\n### 🚶 인구통계 유입 영향 TOP3")
-        demo_ses_top3 = insight_data['demographics_combined'].sort_values('세션변화', ascending=False, key=abs).head(3)
-        for idx, (i, row) in enumerate(demo_ses_top3.iterrows()):
-            if abs(row['세션변화']) > 100:
-                direction = "↑" if row['세션변화'] > 0 else "↓"
-                insights.append(f"**{idx+1}. {row['인구통계']}** {direction} {abs(row['세션변화']):,.0f}세션 ({row['세션증감율']:+.1f}%)")
+    # 6. 인구통계 유입 영향 (TOP3) - 강화된 예외 처리
+    if 'demographics_combined' in insight_data and insight_data['demographics_combined'] is not None and not insight_data['demographics_combined'].empty:
+        try:
+            demo_df = insight_data['demographics_combined']
+            demo_df_filtered = demo_df[~demo_df['인구통계'].str.contains('미분류', na=False)]
+            
+            if not demo_df_filtered.empty and len(demo_df_filtered) > 0:
+                demo_ses_top3 = demo_df_filtered.sort_values('세션변화', ascending=False, key=abs).head(3)
+                if not demo_ses_top3.empty:
+                    insights.append(f"\n### 🚶 인구통계 유입 영향 TOP3")
+                    for idx, (i, row) in enumerate(demo_ses_top3.iterrows()):
+                        if abs(row['세션변화']) > 100:
+                            direction = "↑" if row['세션변화'] > 0 else "↓"
+                            insights.append(f"**{idx+1}. {row['인구통계']}** {direction} {abs(row['세션변화']):,.0f}세션 ({row['세션증감율']:+.1f}%)")
+        except Exception as e:
+            pass  # 인구통계 데이터 오류 시 조용히 스킵
     
     # 7. 대량 구매 영향
     bulk_change = curr['bulk_revenue'] - prev['bulk_revenue']
@@ -494,7 +525,7 @@ def generate_insights(curr, prev, insight_data):
         insights.append(f"대량 구매(150만원↑) 매출이 **₩{abs(bulk_change):,.0f} ({abs(bulk_pct):.1f}%) {direction}**했습니다.")
     
     # 8. 지역 변화
-    if insight_data and 'demo' in insight_data and not insight_data['demo'].empty:
+    if 'demo' in insight_data and insight_data['demo'] is not None and not insight_data['demo'].empty:
         top_demo = insight_data['demo'].iloc[0]
         if abs(top_demo['매출변화']) > 1000000:
             direction = "↑" if top_demo['매출변화'] > 0 else "↓"
