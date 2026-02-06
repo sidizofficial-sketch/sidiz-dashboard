@@ -116,6 +116,60 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     
     s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
     s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
+
+    # --- 1. 공통 베이스 정의 (이게 가장 위에 있어야 NameError가 안 납니다) ---
+    demographics_base = f"""
+    WITH user_demographics AS (
+        SELECT 
+            user_pseudo_id,
+            MAX((SELECT COALESCE(value.string_value, CAST(value.int_value AS STRING)) FROM UNNEST(event_params) WHERE key IN ('u_gender', 'gender') LIMIT 1)) as gender,
+            MAX((SELECT COALESCE(value.string_value, CAST(value.int_value AS STRING)) FROM UNNEST(event_params) WHERE key IN ('u_age', 'age') LIMIT 1)) as age
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+        GROUP BY 1
+    ),
+    raw_events AS (
+        SELECT 
+            e._TABLE_SUFFIX as suffix,
+            e.user_pseudo_id,
+            IFNULL(e.ecommerce.purchase_revenue, 0) as rev,
+            (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+            u.gender,
+            u.age
+        FROM `sidiz-458301.analytics_487246344.events_*` e
+        LEFT JOIN user_demographics u ON e.user_pseudo_id = u.user_pseudo_id
+        WHERE e._TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+    ),
+    proc AS (
+        SELECT suffix, rev, sid, user_pseudo_id,
+               CONCAT(
+                   CASE 
+                       WHEN LOWER(gender) IN ('male', 'm', '1', '남성') THEN '남성' 
+                       WHEN LOWER(gender) IN ('female', 'f', '2', '여성') THEN '여성' 
+                       ELSE '기타' 
+                   END, ' / ', IFNULL(age, '미분류')
+               ) as d
+        FROM raw_events
+    )
+    """
+
+    # --- 2. 통합 쿼리 정의 ---
+    demographics_combined_query = demographics_base + f"""
+    SELECT 
+        d, 
+        SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN rev ELSE 0 END) as curr_rev,
+        SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN rev ELSE 0 END) as prev_rev,
+        SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN rev ELSE 0 END) - SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN rev ELSE 0 END) as rev_diff,
+        ROUND(SAFE_DIVIDE((SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN rev ELSE 0 END) - SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN rev ELSE 0 END)) * 100, SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN rev ELSE 0 END)), 1) as rev_pct,
+        COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END) as curr_ses,
+        COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END) as prev_ses,
+        COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END) - COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END) as ses_diff,
+        ROUND(SAFE_DIVIDE((COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END) - COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END)) * 100, COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, CAST(sid AS STRING)) END)), 1) as ses_pct
+    FROM proc 
+    GROUP BY 1 
+    ORDER BY curr_rev DESC 
+    LIMIT 10
+    """
     
     # 제품별 매출 변화 (TOP3)
     product_query = f"""
