@@ -45,20 +45,24 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
     ),
-    -- EASY REPAIR만 구매한 주문 식별 (모든 카테고리 필드 확인)
-    easy_repair_only_orders AS (
-        SELECT DISTINCT transaction_id
+    -- EASY REPAIR만 구매한 주문 식별 (하이픈 포함)
+    easy_repair_check AS (
+        SELECT 
+            transaction_id,
+            -- 각 아이템이 EASY REPAIR인지 확인
+            (UPPER(COALESCE(item.item_category, '')) LIKE '%EASY REPAIR%' OR
+             UPPER(COALESCE(item.item_category, '')) LIKE '%EASY-REPAIR%') as is_easy_repair
         FROM base,
         UNNEST(items) as item
         WHERE event_name = 'purchase'
+        GROUP BY transaction_id, item.item_id, item.item_category
+    ),
+    easy_repair_only_orders AS (
+        SELECT DISTINCT transaction_id
+        FROM easy_repair_check
         GROUP BY transaction_id
-        HAVING LOGICAL_AND(
-            item.item_category LIKE '%EASY REPAIR%' OR
-            item.item_category2 LIKE '%EASY REPAIR%' OR
-            item.item_category3 LIKE '%EASY REPAIR%' OR
-            item.item_category4 LIKE '%EASY REPAIR%' OR
-            item.item_category5 LIKE '%EASY REPAIR%'
-        )
+        -- 모든 아이템이 EASY REPAIR인 주문만
+        HAVING LOGICAL_AND(is_easy_repair)
     )
     SELECT 
         CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
