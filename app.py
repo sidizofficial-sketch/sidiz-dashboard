@@ -110,78 +110,68 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
     st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
 
-    # 제품별 매출 변화 (item_id 기준 + 최신 제품명 + 세대 구분 보존)
+    # 제품별 매출 변화 (GA4 제품 성능 보고서 일치 로직)
     product_query = f"""
-    WITH base_events AS (
+    WITH product_raw AS (
         SELECT 
-            user_pseudo_id,
-            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
+            _TABLE_SUFFIX as suffix,
             event_name,
             event_timestamp,
-            _TABLE_SUFFIX as suffix,
-            -- 제품 정보
-            COALESCE(item.item_id, item.item_name) as product_id,  -- ID 우선, 없으면 이름 사용
+            user_pseudo_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') as session_id,
+            COALESCE(item.item_id, item.item_name) as item_id,
             item.item_name,
             item.quantity,
-            item.price * item.quantity as item_revenue
+            item.price
         FROM `sidiz-458301.analytics_487246344.events_*`,
         UNNEST(items) as item
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-        AND event_name IN ('purchase', 'view_item')
+        WHERE _TABLE_SUFFIX BETWEEN '{min(s_p, s_c)}' AND '{max(e_p, e_c)}'
         AND item.item_name IS NOT NULL
     ),
-    latest_names AS (
+    product_mapping AS (
+        -- ID별로 가장 최신 이름을 추출하여 매칭 테이블 생성
         SELECT 
-            product_id,
-            -- 가장 최근 제품명 사용
-            ARRAY_AGG(item_name ORDER BY suffix DESC, event_timestamp DESC LIMIT 1)[OFFSET(0)] as display_name
-        FROM base_events
-        WHERE suffix BETWEEN '{s_c}' AND '{e_c}'
-        GROUP BY product_id
+            item_id, 
+            ARRAY_AGG(item_name ORDER BY suffix DESC, event_timestamp DESC LIMIT 1)[OFFSET(0)] as representative_name
+        FROM product_raw
+        GROUP BY item_id
     ),
-    fallback_names AS (
+    product_metrics AS (
         SELECT 
-            product_id,
-            ARRAY_AGG(item_name ORDER BY suffix DESC, event_timestamp DESC LIMIT 1)[OFFSET(0)] as fallback_name
-        FROM base_events
-        WHERE suffix BETWEEN '{s_p}' AND '{e_p}'
-        GROUP BY product_id
-    ),
-    aggregated AS (
-        SELECT 
-            product_id,
-            -- 현재 기간 매출 (purchase 이벤트)
-            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' THEN COALESCE(item_revenue, 0) ELSE 0 END) as current_revenue,
-            -- 이전 기간 매출
-            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' THEN COALESCE(item_revenue, 0) ELSE 0 END) as previous_revenue,
-            -- 현재 기간 세션 (view_item 이벤트 기준)
-            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'view_item' 
-                THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as current_sessions,
-            -- 이전 기간 세션
-            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'view_item' 
-                THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as previous_sessions,
-            -- 현재 기간 수량
-            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' THEN COALESCE(quantity, 0) ELSE 0 END) as current_quantity,
-            -- 이전 기간 수량
-            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' THEN COALESCE(quantity, 0) ELSE 0 END) as previous_quantity
-        FROM base_events
-        GROUP BY product_id
+            item_id,
+            -- 현재 매출 (항상 수량 * 단가로 계산하여 제품별 정합성 유지)
+            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' 
+                THEN (COALESCE(price, 0) * COALESCE(quantity, 0)) ELSE 0 END) as curr_rev,
+            -- 이전 매출
+            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' 
+                THEN (COALESCE(price, 0) * COALESCE(quantity, 0)) ELSE 0 END) as prev_rev,
+            -- 세션 (해당 제품과 상호작용한 모든 고유 세션)
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' 
+                THEN CONCAT(user_pseudo_id, CAST(session_id AS STRING)) END) as curr_sess,
+            COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' 
+                THEN CONCAT(user_pseudo_id, CAST(session_id AS STRING)) END) as prev_sess,
+            -- 수량
+            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' 
+                THEN COALESCE(quantity, 0) ELSE 0 END) as curr_qty,
+            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' 
+                THEN COALESCE(quantity, 0) ELSE 0 END) as prev_qty
+        FROM product_raw
+        GROUP BY item_id
     )
     SELECT 
-        COALESCE(ln.display_name, fn.fallback_name, a.product_id) as product_name,
-        COALESCE(a.current_revenue, 0) as current_revenue,
-        COALESCE(a.previous_revenue, 0) as previous_revenue,
-        COALESCE(a.current_revenue, 0) - COALESCE(a.previous_revenue, 0) as revenue_change,
-        ROUND(SAFE_DIVIDE((COALESCE(a.current_revenue, 0) - COALESCE(a.previous_revenue, 0)) * 100, NULLIF(COALESCE(a.previous_revenue, 0), 0)), 1) as change_pct,
-        COALESCE(a.current_sessions, 0) as current_sessions,
-        COALESCE(a.previous_sessions, 0) as previous_sessions,
-        COALESCE(a.current_quantity, 0) as current_quantity,
-        COALESCE(a.previous_quantity, 0) as previous_quantity
-    FROM aggregated a
-    LEFT JOIN latest_names ln ON a.product_id = ln.product_id
-    LEFT JOIN fallback_names fn ON a.product_id = fn.product_id
-    WHERE COALESCE(a.current_revenue, 0) > 0 OR COALESCE(a.previous_revenue, 0) > 0
-    ORDER BY COALESCE(a.current_revenue, 0) DESC
+        m.representative_name as product_name,
+        COALESCE(p.curr_rev, 0) as current_revenue,
+        COALESCE(p.prev_rev, 0) as previous_revenue,
+        COALESCE(p.curr_rev, 0) - COALESCE(p.prev_rev, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((COALESCE(p.curr_rev, 0) - COALESCE(p.prev_rev, 0)) * 100, NULLIF(COALESCE(p.prev_rev, 0), 0)), 1) as change_pct,
+        COALESCE(p.curr_sess, 0) as current_sessions,
+        COALESCE(p.prev_sess, 0) as previous_sessions,
+        COALESCE(p.curr_qty, 0) as current_quantity,
+        COALESCE(p.prev_qty, 0) as previous_quantity
+    FROM product_metrics p
+    JOIN product_mapping m ON p.item_id = m.item_id
+    WHERE COALESCE(p.curr_rev, 0) > 0 OR COALESCE(p.prev_rev, 0) > 0
+    ORDER BY COALESCE(p.curr_rev, 0) DESC
     LIMIT 20
     """
 
