@@ -49,14 +49,54 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         # 매장 데이터 제외 모드
         query = """
     WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store만 정확히 매칭
+        -- 매장 유입 세션 블랙리스트: 11개 매장 QR 코드
         SELECT DISTINCT 
             CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
-            LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
-            LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store')
+            -- traffic_source.source
+            LOWER(COALESCE(traffic_source.source, '')) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            ) OR
+            -- event_params의 source
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            ) OR
+            -- collected_traffic_source.manual_source
+            LOWER(COALESCE(collected_traffic_source.manual_source, '')) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            )
         )
     ),
     base AS (
@@ -109,14 +149,54 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         # 매장 데이터만 보기 모드
         query = """
     WITH store_sessions AS (
-        -- 매장 유입 세션: store_register_qr, qr_store만 정확히 매칭
+        -- 매장 유입 세션: 11개 매장 QR 코드
         SELECT DISTINCT 
             CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
-            LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
-            LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store')
+            -- traffic_source.source
+            LOWER(COALESCE(traffic_source.source, '')) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            ) OR
+            -- event_params의 source
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            ) OR
+            -- collected_traffic_source.manual_source
+            LOWER(COALESCE(collected_traffic_source.manual_source, '')) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            )
         )
     ),
     base AS (
@@ -257,8 +337,32 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
             AND (
-                LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
-                LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store')
+                LOWER(traffic_source.source) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            ) OR
+                LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            )
             )
         ),
         events_base AS (
