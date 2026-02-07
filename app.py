@@ -38,40 +38,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
     else:
         group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
-    # 매장 제외 조건 (store + qr 동시 포함만 매장으로 간주)
-    store_filter = """
-        AND user_pseudo_id NOT IN (
-            SELECT DISTINCT user_pseudo_id
-            FROM `sidiz-458301.analytics_487246344.events_*`
-            WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-            AND (
-                -- event_params에서 store + qr 동시 체크
-                (REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'qr'))
-                OR
-                (REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'qr'))
-                OR
-                (REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'campaign' LIMIT 1), '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'campaign' LIMIT 1), '')), r'qr'))
-                OR
-                -- traffic_source에서 store + qr 동시 체크
-                (REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'qr'))
-                OR
-                (REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'qr'))
-                OR
-                -- collected_traffic_source에서 store + qr 동시 체크
-                (REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'qr'))
-                OR
-                (REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'qr'))
-            )
-        )
-    """ if exclude_store else ""
-
     # 핵심 지표 쿼리
     query = f"""
     WITH """ + ("store_sessions AS (\n" +
@@ -152,7 +118,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
         ),
         events_base AS (
             SELECT 
-                PARSE_DATE('%Y%m%d', event_date) as event_date,
+                {group_sql} as period_date,
                 user_pseudo_id,
                 (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
                 event_name,
@@ -161,7 +127,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
             WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
         )
         SELECT 
-            CAST({group_sql} AS STRING) as period_label,
+            CAST(period_date AS STRING) as period_label,
             COUNT(DISTINCT CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING))) as sessions,
             SUM(IFNULL(e.purchase_revenue, 0)) as revenue,
             COUNTIF(e.event_name = 'purchase') as orders
