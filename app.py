@@ -38,9 +38,9 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
     else:
         group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
-    # 매장 제외 조건
+    # 매장 제외 조건 (NULL은 빈 문자열로 처리하여 포함)
     store_filter = """
-        AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1) != 'qr_store'
+        AND COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '') != 'qr_store'
     """ if exclude_store else ""
 
     # 핵심 지표 쿼리
@@ -112,9 +112,9 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
     s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
 
-    # 매장 제외 조건
+    # 매장 제외 조건 (NULL은 빈 문자열로 처리하여 포함)
     store_filter = """
-        AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1) != 'qr_store'
+        AND COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '') != 'qr_store'
     """ if exclude_store else ""
 
     # 제품별 매출 변화 (item_id 기준)
