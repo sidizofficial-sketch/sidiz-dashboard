@@ -618,6 +618,10 @@ with st.sidebar:
     time_unit = st.selectbox("추이 분석 단위", ["일별", "주별", "월별"])
 
 if len(curr_date) == 2 and len(comp_date) == 2:
+    # 매장 제외 상태 표시
+    if exclude_store:
+        st.info("🏪 매장 데이터(qr_store) 제외 모드 - 온라인 전용 데이터만 표시됩니다")
+    
     summary_df, ts_df = get_dashboard_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1], time_unit, exclude_store)
     
     if summary_df is not None and not summary_df.empty:
@@ -864,7 +868,10 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                             
                             # 매출 비중 계산
                             total_revenue = df['현재매출'].sum()
-                            df['매출비중'] = (df['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
+                            if total_revenue > 0:
+                                df['매출비중'] = (df['현재매출'] / total_revenue * 100).round(1)
+                            else:
+                                df['매출비중'] = 0
                             
                             # 순위 추가 (1부터 시작)
                             df.insert(0, '순위', range(1, len(df) + 1))
@@ -892,7 +899,10 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                             
                             # 매출 비중 계산
                             total_revenue = df['현재매출'].sum()
-                            df['매출비중'] = (df['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
+                            if total_revenue > 0:
+                                df['매출비중'] = (df['현재매출'] / total_revenue * 100).round(1)
+                            else:
+                                df['매출비중'] = 0
                             
                             # 순위 추가
                             df.insert(0, '순위', range(1, len(df) + 1))
@@ -920,7 +930,10 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                             
                             # 매출 비중 계산
                             total_revenue = df['현재매출'].sum()
-                            df['매출비중'] = (df['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
+                            if total_revenue > 0:
+                                df['매출비중'] = (df['현재매출'] / total_revenue * 100).round(1)
+                            else:
+                                df['매출비중'] = 0
                             
                             # 순위 추가
                             df.insert(0, '순위', range(1, len(df) + 1))
@@ -942,7 +955,10 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                             
                             # 매출 비중 계산
                             total_revenue = df['현재매출'].sum()
-                            df['매출비중'] = (df['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
+                            if total_revenue > 0:
+                                df['매출비중'] = (df['현재매출'] / total_revenue * 100).round(1)
+                            else:
+                                df['매출비중'] = 0
                             
                             # 순위 추가
                             df.insert(0, '순위', range(1, len(df) + 1))
