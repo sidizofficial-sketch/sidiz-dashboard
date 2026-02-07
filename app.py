@@ -145,13 +145,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     HAVING type IS NOT NULL
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
     
-    앗, 죄송합니다! 제가 드린 코드 조각에서 ts_query 변수를 정의하지 않고 반환(return)하려고 해서 발생한 NameError입니다.
-
-Streamlit 대시보드 구조상 상단에서 메인 지표 쿼리(query)를 만들면, 하단의 시계열 그래프용 쿼리(ts_query)도 함께 정의되어야 오류가 나지 않습니다.
-
-15,765,000원을 맞추기 위한 소스 11개 + 매체 3개 로직을 시계열 쿼리에도 동일하게 적용하여 전체 코드를 수정해 드립니다. 이 블록을 get_dashboard_data 함수 내부의 elif data_source == "매장 전용": 부분에 통째로 덮어쓰세요.
-
-🛠️ NameError 해결 및 수치 정밀 타격 코드
 Python
     elif data_source == "매장 전용":
         # 1. 메인 지표용 쿼리 (15,765,000원 정밀 타격)
