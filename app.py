@@ -110,12 +110,15 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
     st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
 
-    # 제품별 매출 변화 (루커 스튜디오 정합성 맞춤)
+    # 제품별 매출 변화 (대괄호 제거 + 루커 정합성)
     product_query = f"""
     WITH product_events AS (
         SELECT 
-            -- [원칙 1] 통합 Match Key: 공백+특수문자 완전 제거
-            REGEXP_REPLACE(UPPER(TRIM(item.item_name)), r'\\s+|[^A-Z0-9가-힣]', '') as match_key,
+            -- [강화] Match Key: 대괄호 제거 → 공백+특수문자 제거
+            REGEXP_REPLACE(
+                UPPER(TRIM(REGEXP_REPLACE(item.item_name, r'\\[.*?\\]', ''))),  -- 1단계: [이벤트] 제거
+                r'\\s+|[^A-Z0-9가-힣]', ''                                       -- 2단계: 공백+특수문자 제거
+            ) as match_key,
             item.item_name as original_name,
             _TABLE_SUFFIX as date_suffix,
             event_name,
@@ -147,7 +150,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             SUM(IF(date_suffix BETWEEN '{s_p.replace("-", "")}' AND '{e_p.replace("-", "")}' AND event_name = 'purchase', 
                 COALESCE(price, 0) * COALESCE(quantity, 0), 0)) as prev_rev,
             
-            -- [원칙 2] 세션: 모든 이벤트 (view_item 제한 제거)
+            -- 세션: 모든 이벤트
             COUNT(DISTINCT IF(date_suffix BETWEEN '{s_c.replace("-", "")}' AND '{e_c.replace("-", "")}', 
                 CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)), NULL)) as curr_sess,
             COUNT(DISTINCT IF(date_suffix BETWEEN '{s_p.replace("-", "")}' AND '{e_p.replace("-", "")}', 
