@@ -47,22 +47,27 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     # --- 1. 매장 전용 모드 (세션 추적 로직) ---
     if data_source == "매장 전용":
         query = """
-        WITH session_source_map AS (
-            -- 각 세션별로 '진짜' 소스와 매체를 결정 (루커스튜디오의 세션 소스 방식)
+        WITH session_first_click AS (
+            -- 각 세션별로 '가장 처음 발생한' 소스와 매체만 추출 (루커스튜디오 세션 소스 로직)
             SELECT 
                 CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key,
-                MAX(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source))) as src,
-                MAX(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium))) as med
+                ARRAY_AGG(
+                    STRUCT(
+                        LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source)) as src,
+                        LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium)) as med
+                    )
+                    ORDER BY event_timestamp ASC LIMIT 1
+                )[OFFSET(0)] as first_click
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
             GROUP BY session_key
         ),
         target_sessions AS (
-            -- 위에서 정의된 소스 중 '매장 QR'에 해당하는 세션 ID만 추출
+            -- 첫 클릭이 매장 QR인 세션 ID만 필터링
             SELECT session_key 
-            FROM session_source_map
-            WHERE src IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
-              AND med IN ('qr_code', 'qr_coupon', 'qr_product')
+            FROM session_first_click
+            WHERE first_click.src IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
+              AND first_click.med IN ('qr_code', 'qr_coupon', 'qr_product')
         ),
         base_events AS (
             SELECT 
