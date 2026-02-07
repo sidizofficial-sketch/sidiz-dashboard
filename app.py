@@ -43,7 +43,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
 
     # --- 1. 매장 전용 모드 (루커스튜디오 수치 100% 동기화) ---
     if data_source == "매장 전용":
-        # 공통 로직: 세션의 첫 유입 경로가 매장 QR인 세션들을 골라냄
         base_logic = """
         WITH session_base AS (
             SELECT 
@@ -69,7 +68,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         )
         """
 
-        # 메인 카드 지표용 쿼리
+        # 메인 카드 지표용 쿼리 (PARSE_DATE 제거 및 비교 로직 수정)
         query = base_logic + """
         SELECT 
             CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
@@ -87,7 +86,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         """
         query = query.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
 
-        # 시계열 차트용 쿼리 (ts_query 추가)
+        # 시계열 차트용 쿼리
         ts_query = base_logic + """
         SELECT 
             CAST({group_sql_formatted} AS STRING) as period_label,
@@ -98,10 +97,10 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         WHERE date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
         GROUP BY 1 ORDER BY 1
         """
-        # group_sql이 문자열 내에서 이미 정의되어 있으므로 적절히 매칭
-        formatted_group_sql = group_sql.replace("event_date", "date") # base_logic에서 변환된 컬럼명 대응
+        # group_sql 내의 event_date를 date로 변경하여 에러 방지
+        formatted_group_sql = group_sql.replace("event_date", "date")
         ts_query = ts_query.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c, group_sql_formatted=formatted_group_sql)
-
+        
     # --- 2. 시디즈닷컴 (매장 제외) ---
     elif data_source == "시디즈닷컴 (매장 제외)":
         query = """
