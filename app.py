@@ -147,17 +147,16 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     
     elif data_source == "매장 전용":
         query = """
-    WITH raw_events AS (
+    WITH base_events AS (
         SELECT 
             PARSE_DATE('%Y%m%d', event_date) as date,
             user_pseudo_id,
             event_name,
             ecommerce.purchase_revenue,
             ecommerce.transaction_id,
-            items,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
-            -- 소스 정보를 한 곳으로 모음
+            -- 이벤트 매개변수와 트래픽 소스에서 소스 값을 추출
             LOWER(COALESCE(
                 (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1),
                 traffic_source.source,
@@ -166,38 +165,30 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
-    store_sessions AS (
-        -- [수정] 11개 코드를 고정값으로 박아넣음
-        SELECT DISTINCT 
-            CONCAT(user_pseudo_id, CAST(sid AS STRING)) as session_key
-        FROM raw_events
+    store_filtered AS (
+        -- [핵심] 11개 코드가 정확히 일치하는 데이터만 남김
+        SELECT *
+        FROM base_events
         WHERE source_val IN (
             'store_register_qr', 'qr_store_', 'qr_store_247482', 
             'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 
             'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 
             'qr_store_252941', 'qr_store_247475'
         )
-    ),
-    store_only_base AS (
-        -- 위에서 정의한 11개 코드 세션에 해당하는 데이터만 JOIN으로 남김
-        SELECT r.*, CONCAT(r.user_pseudo_id, CAST(r.sid AS STRING)) as session_key
-        FROM raw_events r
-        INNER JOIN store_sessions s 
-          ON CONCAT(r.user_pseudo_id, CAST(r.sid AS STRING)) = s.session_key
     )
     SELECT 
         CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
         COUNT(DISTINCT user_pseudo_id) as users,
         COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
-        COUNT(DISTINCT session_key) as sessions,
+        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
         COUNTIF(event_name = 'sign_up') as signups,
         COUNTIF(event_name = 'purchase') as orders,
         SUM(IFNULL(purchase_revenue, 0)) as revenue,
-        -- 대량구매/이지리페어 필터는 일단 전체 매출 확인을 위해 기본 SUM을 먼저 확인
+        -- 대량구매/필터링 매출도 동일한 로직 적용
         COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
         SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
-        SUM(IFNULL(purchase_revenue, 0)) as filtered_revenue -- 임시로 전체매출과 동일하게 설정하여 베이스 확인
-    FROM store_only_base
+        SUM(IFNULL(purchase_revenue, 0)) as filtered_revenue
+    FROM store_filtered
     GROUP BY 1 
     HAVING type IS NOT NULL
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
