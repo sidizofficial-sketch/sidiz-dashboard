@@ -46,17 +46,23 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
 
     # --- 1. 매장 전용 모드 (세션 추적 로직) ---
     if data_source == "매장 전용":
-        # 메인 지표 쿼리 (JOIN 방식)
         query = """
-        WITH target_sessions AS (
-            SELECT DISTINCT 
-                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
+        WITH session_source_map AS (
+            -- 각 세션별로 '진짜' 소스와 매체를 결정 (루커스튜디오의 세션 소스 방식)
+            SELECT 
+                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key,
+                MAX(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source))) as src,
+                MAX(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium))) as med
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-            AND (
-                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source)) IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
-                AND LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium)) IN ('qr_code', 'qr_coupon', 'qr_product')
-            )
+            GROUP BY session_key
+        ),
+        target_sessions AS (
+            -- 위에서 정의된 소스 중 '매장 QR'에 해당하는 세션 ID만 추출
+            SELECT session_key 
+            FROM session_source_map
+            WHERE src IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
+              AND med IN ('qr_code', 'qr_coupon', 'qr_product')
         ),
         base_events AS (
             SELECT 
@@ -83,6 +89,9 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         INNER JOIN target_sessions t ON b.session_key = t.session_key
         GROUP BY 1 HAVING type IS NOT NULL
         """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
+
+        # ts_query도 동일한 target_sessions 로직 적용 (생략 가능하나 일관성을 위해 수정)
+        ts_query = query.replace("GROUP BY 1 HAVING type IS NOT NULL", "") # 구조상 유사하게 처리
 
         # 시계열 쿼리 (JOIN 방식)
         ts_query = """
