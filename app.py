@@ -278,62 +278,52 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
     
     elif data_source == "매장 전용":
-        ts_query = """
-        WITH store_sessions AS (
-            SELECT DISTINCT 
-                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
-            FROM `sidiz-458301.analytics_487246344.events_*`
-            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-            AND (
-                LOWER(traffic_source.source) IN (
-                'store_register_qr',
-                'qr_store_',
-                'qr_store_247482',
-                'qr_store_247483',
-                'qr_store_247488',
-                'qr_store_247476',
-                'qr_store_247474',
-                'qr_store_247486',
-                'qr_store_247489',
-                'qr_store_252941',
-                'qr_store_247475'
-            ) OR
-                LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN (
-                'store_register_qr',
-                'qr_store_',
-                'qr_store_247482',
-                'qr_store_247483',
-                'qr_store_247488',
-                'qr_store_247476',
-                'qr_store_247474',
-                'qr_store_247486',
-                'qr_store_247489',
-                'qr_store_252941',
-                'qr_store_247475'
-            )
-            )
-        ),
-        events_base AS (
-            SELECT 
-                {group_sql} as period_date,
-                user_pseudo_id,
-                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
-                event_name,
-                ecommerce.purchase_revenue
-            FROM `sidiz-458301.analytics_487246344.events_*`
-            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-        )
+        query = """
+    WITH raw_events AS (
         SELECT 
-            CAST(period_date AS STRING) as period_label,
-            COUNT(DISTINCT CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING))) as sessions,
-            SUM(IFNULL(e.purchase_revenue, 0)) as revenue,
-            COUNTIF(e.event_name = 'purchase') as orders
-        FROM events_base e
-        WHERE CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING)) IN (
-            SELECT session_key FROM store_sessions
-        )
-        GROUP BY 1 ORDER BY 1
-        """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
+            PARSE_DATE('%Y%m%d', event_date) as date,
+            user_pseudo_id,
+            event_name,
+            ecommerce.purchase_revenue,
+            ecommerce.transaction_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
+            -- 소스와 매체를 추출 (LOWER로 통일)
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source, '')) as src,
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium, '')) as med
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+    ),
+    filtered_events AS (
+        SELECT *,
+            CONCAT(user_pseudo_id, CAST(sid AS STRING)) as session_key
+        FROM raw_events
+        WHERE 
+            -- 1. 소스 11개 고정
+            src IN (
+                'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 
+                'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 
+                'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
+            )
+            -- 2. 매체 3개 고정 (이미지에서 확인된 값)
+            AND med IN ('qr_code', 'qr_coupon', 'qr_product')
+    )
+    SELECT 
+        CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
+        COUNT(DISTINCT user_pseudo_id) as users,
+        COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
+        COUNT(DISTINCT session_key) as sessions,
+        COUNTIF(event_name = 'sign_up') as signups,
+        COUNTIF(event_name = 'purchase') as orders,
+        SUM(IFNULL(purchase_revenue, 0)) as revenue,
+        -- 대량구매 및 필터링 매출 집계
+        COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
+        SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
+        SUM(IFNULL(purchase_revenue, 0)) as filtered_revenue
+    FROM filtered_events
+    GROUP BY 1 
+    HAVING type IS NOT NULL
+    """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
     
     else:
         ts_query = f"""
