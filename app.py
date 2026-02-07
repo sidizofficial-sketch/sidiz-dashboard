@@ -110,11 +110,11 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
     st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
 
-    # 제품별 매출 변화 (item_id 기준 + 최신 제품명 표시)
+    # 제품별 매출 변화 (item_id 기준 집계 + 최신 제품명 표시)
     product_query = f"""
     WITH product_events AS (
         SELECT 
-            COALESCE(item.item_id, item.item_name) as item_id,
+            COALESCE(item.item_id, item.item_name) as product_id,
             item.item_name,
             _TABLE_SUFFIX as date_suffix,
             event_name,
@@ -130,52 +130,52 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         AND item.item_name IS NOT NULL
     ),
     latest_names AS (
-        -- item_id별 가장 최신 제품명
+        -- product_id별 최신 제품명
         SELECT 
-            item_id,
-            ARRAY_AGG(item_name ORDER BY date_suffix DESC, event_timestamp DESC LIMIT 1)[OFFSET(0)] as latest_name
+            product_id,
+            ARRAY_AGG(item_name ORDER BY date_suffix DESC, event_timestamp DESC LIMIT 1)[OFFSET(0)] as display_name
         FROM product_events
-        GROUP BY item_id
+        GROUP BY product_id
     ),
-    product_summary AS (
+    product_metrics AS (
         SELECT 
-            p.item_id,
+            product_id,
             -- 현재 기간 매출
             SUM(IF(date_suffix >= '{s_c}' AND date_suffix <= '{e_c}' AND event_name = 'purchase', 
-                price * quantity, 0)) as curr_rev,
+                COALESCE(price, 0) * COALESCE(quantity, 0), 0)) as curr_rev,
             -- 이전 기간 매출  
             SUM(IF(date_suffix >= '{s_p}' AND date_suffix <= '{e_p}' AND event_name = 'purchase', 
-                price * quantity, 0)) as prev_rev,
-            -- 현재 기간 세션 (view_item 이벤트만)
+                COALESCE(price, 0) * COALESCE(quantity, 0), 0)) as prev_rev,
+            -- 현재 기간 세션 (view_item만)
             COUNT(DISTINCT IF(date_suffix >= '{s_c}' AND date_suffix <= '{e_c}' AND event_name = 'view_item',
-                CONCAT(user_pseudo_id, CAST(session_id AS STRING)), NULL)) as curr_sess,
-            -- 이전 기간 세션 (view_item 이벤트만)
+                CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)), NULL)) as curr_sess,
+            -- 이전 기간 세션 (view_item만)
             COUNT(DISTINCT IF(date_suffix >= '{s_p}' AND date_suffix <= '{e_p}' AND event_name = 'view_item',
-                CONCAT(user_pseudo_id, CAST(session_id AS STRING)), NULL)) as prev_sess,
+                CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)), NULL)) as prev_sess,
             -- 현재 수량
             SUM(IF(date_suffix >= '{s_c}' AND date_suffix <= '{e_c}' AND event_name = 'purchase',
-                quantity, 0)) as curr_qty,
+                COALESCE(quantity, 0), 0)) as curr_qty,
             -- 이전 수량
             SUM(IF(date_suffix >= '{s_p}' AND date_suffix <= '{e_p}' AND event_name = 'purchase',
-                quantity, 0)) as prev_qty
-        FROM product_events p
-        GROUP BY p.item_id
+                COALESCE(quantity, 0), 0)) as prev_qty
+        FROM product_events
+        GROUP BY product_id
     )
     SELECT 
-        COALESCE(n.latest_name, s.item_id) as product_name,
-        s.curr_rev as current_revenue,
-        s.prev_rev as previous_revenue,
-        s.curr_rev - s.prev_rev as revenue_change,
-        ROUND(SAFE_DIVIDE((s.curr_rev - s.prev_rev) * 100, NULLIF(s.prev_rev, 0)), 1) as change_pct,
-        s.curr_sess as current_sessions,
-        s.prev_sess as previous_sessions,
-        s.curr_qty as current_quantity,
-        s.prev_qty as previous_quantity
-    FROM product_summary s
-    LEFT JOIN latest_names n ON s.item_id = n.item_id
-    WHERE s.curr_rev > 0 OR s.prev_rev > 0
-    ORDER BY s.curr_rev DESC
-    LIMIT 50
+        n.display_name as product_name,
+        m.curr_rev as current_revenue,
+        m.prev_rev as previous_revenue,
+        m.curr_rev - m.prev_rev as revenue_change,
+        ROUND(SAFE_DIVIDE((m.curr_rev - m.prev_rev) * 100, NULLIF(m.prev_rev, 0)), 1) as change_pct,
+        m.curr_sess as current_sessions,
+        m.prev_sess as previous_sessions,
+        m.curr_qty as current_quantity,
+        m.prev_qty as previous_quantity
+    FROM product_metrics m
+    JOIN latest_names n ON m.product_id = n.product_id
+    WHERE m.curr_rev > 0 OR m.prev_rev > 0
+    ORDER BY m.curr_rev DESC
+    LIMIT 20
     """
 
     # 채널별 매출 & 세션 변화 (통합 쿼리 - 단일 소스)
@@ -412,52 +412,19 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         # 컬럼명 정확히 매칭
         results['product'].columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율', '현재세션', '이전세션', '현재수량', '이전수량']
         
-        # 제품명 정규화 및 그룹화
+        # SQL에서 이미 정규화 및 그룹화 완료 - 추가 처리만 수행
         if 'product' in results and not results['product'].empty:
             pdf = results['product']
             
-            # 1. 제품명 정규화: 특수문자 제거, 공백 통합, 대문자 변환
-            pdf['정규화명'] = (
-                pdf['제품명']
-                .str.replace(r'[^가-힣a-zA-Z0-9\s]', '', regex=True)  # 특수문자 제거
-                .str.replace(r'\s+', ' ', regex=True)  # 연속 공백 제거
-                .str.strip()
-                .str.upper()
-            )
+            # 변화량 계산
+            pdf['세션변화'] = pdf['현재세션'] - pdf['이전세션']
+            pdf['수량변화'] = pdf['현재수량'] - pdf['이전수량']
             
-            # 2. 정규화된 이름으로 그룹화하여 합산
-            pdf_grouped = pdf.groupby('정규화명', as_index=False).agg({
-                '제품명': 'first',  # 첫 번째 원본 이름 사용
-                '현재매출': 'sum',
-                '이전매출': 'sum',
-                '현재세션': 'sum',
-                '이전세션': 'sum',
-                '현재수량': 'sum',
-                '이전수량': 'sum'
-            })
+            # 매출 비중 계산
+            total_revenue = pdf['현재매출'].sum()
+            pdf['매출비중'] = (pdf['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
             
-            # 3. 변화량 및 증감율 재계산
-            pdf_grouped['매출변화'] = pdf_grouped['현재매출'] - pdf_grouped['이전매출']
-            pdf_grouped['증감율'] = (
-                (pdf_grouped['매출변화'] / pdf_grouped['이전매출'] * 100)
-                .replace([float('inf'), -float('inf')], 0)
-                .fillna(0)
-            )
-            pdf_grouped['세션변화'] = pdf_grouped['현재세션'] - pdf_grouped['이전세션']
-            pdf_grouped['수량변화'] = pdf_grouped['현재수량'] - pdf_grouped['이전수량']
-            
-            # 4. 매출 비중 계산
-            total_revenue = pdf_grouped['현재매출'].sum()
-            pdf_grouped['매출비중'] = (pdf_grouped['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
-            
-            # 5. 현재 매출 기준 정렬 후 상위 20개
-            results['product'] = (
-                pdf_grouped
-                .sort_values(by='현재매출', ascending=False)
-                .head(20)
-                .reset_index(drop=True)
-                [['제품명', '현재매출', '이전매출', '매출변화', '증감율', '현재세션', '이전세션', '세션변화', '현재수량', '이전수량', '수량변화', '매출비중']]
-            )
+            results['product'] = pdf
         
         results['channel_combined'].columns = ['채널', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
         results['demo'].columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
