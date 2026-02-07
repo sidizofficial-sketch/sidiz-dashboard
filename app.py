@@ -47,48 +47,52 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     # --- 1. 매장 전용 모드 (루커스튜디오 수치 완전 일치화) ---
     if data_source == "매장 전용":
         query = """
-        WITH raw_data AS (
+        WITH session_base AS (
             SELECT 
                 PARSE_DATE('%Y%m%d', event_date) as date,
                 user_pseudo_id,
                 event_name,
                 ecommerce.purchase_revenue,
                 ecommerce.transaction_id,
-                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_id,
+                -- 루커스튜디오가 세션을 구분하는 표준 키값 생성
+                CONCAT(user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1)) as session_id,
                 (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
-                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source)) as src,
-                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium)) as med,
-                event_timestamp
+                -- 루커스튜디오 필터가 참조하는 우선순위 높은 소스/매체 필드
+                LOWER(COALESCE(
+                    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1),
+                    traffic_source.source
+                )) as src,
+                LOWER(COALESCE(
+                    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1),
+                    traffic_source.medium
+                )) as med
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         ),
-        session_first_info AS (
-            SELECT 
-                session_id,
-                ARRAY_AGG(STRUCT(src, med) ORDER BY event_timestamp ASC LIMIT 1)[OFFSET(0)] as first_click
-            FROM raw_data
-            WHERE session_id IS NOT NULL
-            GROUP BY session_id
-        ),
         target_sessions AS (
-            SELECT session_id
-            FROM session_first_info
-            WHERE first_click.src IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
-              AND first_click.med IN ('qr_code', 'qr_coupon', 'qr_product')
+            -- 세션 내에 매장 QR 정보가 '하나라도' 포함된 세션 ID 추출 (루커의 세션 범위 필터 방식)
+            SELECT DISTINCT session_id
+            FROM session_base
+            WHERE src IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
+              AND med IN ('qr_code', 'qr_coupon', 'qr_product')
         )
         SELECT 
-            CASE WHEN r.date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
-            COUNT(DISTINCT r.user_pseudo_id) as users,
-            COUNT(DISTINCT CASE WHEN r.s_num = 1 THEN r.user_pseudo_id END) as new_users,
-            COUNT(DISTINCT r.session_id) as sessions,
-            COUNTIF(r.event_name = 'sign_up') as signups,
-            COUNT(DISTINCT r.transaction_id) as orders,
-            SUM(IFNULL(r.purchase_revenue, 0)) as revenue,
-            COUNT(DISTINCT CASE WHEN r.purchase_revenue >= 1500000 THEN r.transaction_id END) as bulk_orders,
-            SUM(CASE WHEN r.event_name = 'purchase' AND r.purchase_revenue >= 1500000 THEN r.purchase_revenue ELSE 0 END) as bulk_revenue,
-            SUM(IFNULL(r.purchase_revenue, 0)) as filtered_revenue
-        FROM raw_data r
-        INNER JOIN target_sessions t ON r.session_id = t.session_id
+            CASE WHEN b.date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
+            -- 사용자/신규사용자 수 산정
+            COUNT(DISTINCT b.user_pseudo_id) as users,
+            COUNT(DISTINCT CASE WHEN b.s_num = 1 THEN b.user_pseudo_id END) as new_users,
+            -- 세션 수 (1,193 타격)
+            COUNT(DISTINCT b.session_id) as sessions,
+            -- 회원가입 (298 타격)
+            COUNTIF(b.event_name = 'sign_up') as signups,
+            -- 주문 및 매출 (1,576만 타격)
+            COUNT(DISTINCT b.transaction_id) as orders,
+            SUM(IFNULL(b.purchase_revenue, 0)) as revenue,
+            COUNT(DISTINCT CASE WHEN b.purchase_revenue >= 1500000 THEN b.transaction_id END) as bulk_orders,
+            SUM(CASE WHEN b.event_name = 'purchase' AND b.purchase_revenue >= 1500000 THEN b.purchase_revenue ELSE 0 END) as bulk_revenue,
+            SUM(IFNULL(b.purchase_revenue, 0)) as filtered_revenue
+        FROM session_base b
+        JOIN target_sessions t ON b.session_id = t.session_id
         GROUP BY 1 HAVING type IS NOT NULL
         """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
 
