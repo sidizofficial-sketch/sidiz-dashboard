@@ -38,44 +38,46 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     # --- 1. 매장 전용 모드 (루커스튜디오 정답 셋팅) ---
     if data_source == "매장 전용":
         query = """
-        WITH session_agg AS (
-            -- 세션별로 그룹화하여 세션의 대표 소스(첫 유입 소스)를 결정
+        WITH session_first_event AS (
+            -- 1. 각 세션의 '가장 첫 번째 이벤트'의 소스 정보를 추출
             SELECT 
-                CONCAT(user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1)) as sid,
-                MAX(PARSE_DATE('%Y%m%d', event_date)) as date,
+                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as sid,
                 ANY_VALUE(user_pseudo_id) as uid,
-                MAX(CASE WHEN (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) = 1 THEN 1 ELSE 0 END) as is_new_session,
-                COUNTIF(event_name = 'sign_up') as signup_cnt,
-                COUNT(DISTINCT ecommerce.transaction_id) as order_cnt,
-                SUM(IFNULL(ecommerce.purchase_revenue, 0)) as rev_amt,
-                -- 세션의 첫 유입 경로 확인
+                -- 세션의 첫 소스/매체
                 ARRAY_AGG(
-                    LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source))
+                    STRUCT(
+                        LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source)) as src,
+                        LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium)) as med,
+                        (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num
+                    )
                     ORDER BY event_timestamp ASC LIMIT 1
-                )[OFFSET(0)] as first_src,
-                ARRAY_AGG(
-                    LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium))
-                    ORDER BY event_timestamp ASC LIMIT 1
-                )[OFFSET(0)] as first_med
+                )[OFFSET(0)] as first_hit
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
             GROUP BY sid
+        ),
+        target_sids AS (
+            -- 2. 루커스튜디오 필터와 동일하게 '매장 QR'로 시작된 세션 ID만 확보
+            SELECT sid, uid, first_hit.s_num
+            FROM session_first_event
+            WHERE first_hit.src IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
+              AND first_hit.med IN ('qr_code', 'qr_coupon', 'qr_product')
         )
+        -- 3. 필터링된 세션들에 대해서만 모든 지표를 최종 집계
         SELECT 
-            CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
-            COUNT(DISTINCT uid) as users,
-            SUM(is_new_session) as new_users,
-            COUNT(DISTINCT sid) as sessions,
-            SUM(signup_cnt) as signups,
-            SUM(order_cnt) as orders,
-            SUM(rev_amt) as revenue,
-            SUM(CASE WHEN rev_amt >= 1500000 THEN 1 ELSE 0 END) as bulk_orders,
-            SUM(CASE WHEN rev_amt >= 1500000 THEN rev_amt ELSE 0 END) as bulk_revenue,
-            SUM(rev_amt) as filtered_revenue
-        FROM session_agg
-        WHERE 
-            first_src IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
-            AND first_med IN ('qr_code', 'qr_coupon', 'qr_product')
+            CASE WHEN PARSE_DATE('%Y%m%d', event_date) BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
+            COUNT(DISTINCT t.uid) as users,
+            COUNT(DISTINCT CASE WHEN t.s_num = 1 THEN t.uid END) as new_users,
+            COUNT(DISTINCT t.sid) as sessions,
+            COUNTIF(event_name = 'sign_up') as signups,
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN ecommerce.transaction_id END) as orders,
+            SUM(CASE WHEN event_name = 'purchase' THEN IFNULL(ecommerce.purchase_revenue, 0) ELSE 0 END) as revenue,
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' AND ecommerce.purchase_revenue >= 1500000 THEN ecommerce.transaction_id END) as bulk_orders,
+            SUM(CASE WHEN event_name = 'purchase' AND ecommerce.purchase_revenue >= 1500000 THEN ecommerce.purchase_revenue ELSE 0 END) as bulk_revenue,
+            SUM(CASE WHEN event_name = 'purchase' THEN IFNULL(ecommerce.purchase_revenue, 0) ELSE 0 END) as filtered_revenue
+        FROM `sidiz-458301.analytics_487246344.events_*` e
+        INNER JOIN target_sids t ON CONCAT(e.user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) = t.sid
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         GROUP BY 1 HAVING type IS NOT NULL
         """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
         ts_query = """
