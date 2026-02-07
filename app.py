@@ -44,8 +44,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     else:
         group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
-Python
-    # --- 1. 매장 전용 모드 (매출 1,576만 / 세션 1,193 / 가입 298 완전 타격) ---
+    # --- 1. 매장 전용 모드 (루커스튜디오 수치 완전 일치화) ---
     if data_source == "매장 전용":
         query = """
         WITH raw_data AS (
@@ -55,8 +54,7 @@ Python
                 event_name,
                 ecommerce.purchase_revenue,
                 ecommerce.transaction_id,
-                -- 루커스튜디오 방식의 Session ID 결합
-                CONCAT(user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1)) as session_id,
+                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_id,
                 (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
                 LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source)) as src,
                 LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium)) as med,
@@ -65,7 +63,6 @@ Python
             WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         ),
         session_first_info AS (
-            -- 루커스튜디오 필터와 동일하게 '세션의 첫 소스'를 기준으로 세션 분류
             SELECT 
                 session_id,
                 ARRAY_AGG(STRUCT(src, med) ORDER BY event_timestamp ASC LIMIT 1)[OFFSET(0)] as first_click
@@ -74,7 +71,6 @@ Python
             GROUP BY session_id
         ),
         target_sessions AS (
-            -- 매장 QR 소스를 가진 세션 ID 리스트만 확보
             SELECT session_id
             FROM session_first_info
             WHERE first_click.src IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
@@ -82,19 +78,13 @@ Python
         )
         SELECT 
             CASE WHEN r.date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
-            -- 사용자: 세션 소스가 매장인 사용자의 고유 수
             COUNT(DISTINCT r.user_pseudo_id) as users,
-            -- 신규 사용자: 매장 세션 중 ga_session_number가 1인 경우 (428명 타격)
             COUNT(DISTINCT CASE WHEN r.s_num = 1 THEN r.user_pseudo_id END) as new_users,
-            -- 세션: 매장 세션의 고유 수 (1,193개 타격)
             COUNT(DISTINCT r.session_id) as sessions,
-            -- 회원가입 (298건 타격)
             COUNTIF(r.event_name = 'sign_up') as signups,
-            -- 주문수 & 매출: 트랜잭션 중복 제거 (1,576.5만 타격)
             COUNT(DISTINCT r.transaction_id) as orders,
-            SUM(r.purchase_revenue) / COUNT(DISTINCT r.event_timestamp) * COUNT(DISTINCT r.transaction_id) as revenue_temp, -- 단순 SUM 대신 보정
             SUM(IFNULL(r.purchase_revenue, 0)) as revenue,
-            COUNTIF(r.event_name = 'purchase' AND r.purchase_revenue >= 1500000) as bulk_orders,
+            COUNT(DISTINCT CASE WHEN r.purchase_revenue >= 1500000 THEN r.transaction_id END) as bulk_orders,
             SUM(CASE WHEN r.event_name = 'purchase' AND r.purchase_revenue >= 1500000 THEN r.purchase_revenue ELSE 0 END) as bulk_revenue,
             SUM(IFNULL(r.purchase_revenue, 0)) as filtered_revenue
         FROM raw_data r
@@ -102,38 +92,35 @@ Python
         GROUP BY 1 HAVING type IS NOT NULL
         """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
 
-        # ts_query도 동일한 target_sessions 로직 적용 (생략 가능하나 일관성을 위해 수정)
-        ts_query = query.replace("GROUP BY 1 HAVING type IS NOT NULL", "") # 구조상 유사하게 처리
-
-        # 시계열 쿼리 (JOIN 방식)
         ts_query = """
-        WITH target_sessions_ts AS (
-            SELECT DISTINCT 
-                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
-            FROM `sidiz-458301.analytics_487246344.events_*`
-            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-            AND (
-                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source)) IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
-                AND LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium)) IN ('qr_code', 'qr_coupon', 'qr_product')
-            )
-        ),
-        raw_ts AS (
+        WITH raw_ts AS (
             SELECT 
                 {group_sql} as period_date,
-                user_pseudo_id,
+                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_id,
                 ecommerce.purchase_revenue,
                 event_name,
-                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
+                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source)) as src,
+                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium)) as med,
+                event_timestamp
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        ),
+        target_ts AS (
+            SELECT session_id
+            FROM (
+                SELECT session_id, ARRAY_AGG(STRUCT(src, med) ORDER BY event_timestamp ASC LIMIT 1)[OFFSET(0)] as first_click
+                FROM raw_ts GROUP BY session_id
+            )
+            WHERE first_click.src IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
+              AND first_click.med IN ('qr_code', 'qr_coupon', 'qr_product')
         )
         SELECT 
             CAST(r.period_date AS STRING) as period_label,
-            COUNT(DISTINCT r.session_key) as sessions,
+            COUNT(DISTINCT r.session_id) as sessions,
             SUM(IFNULL(r.purchase_revenue, 0)) as revenue,
             COUNTIF(r.event_name = 'purchase') as orders
         FROM raw_ts r
-        INNER JOIN target_sessions_ts t ON r.session_key = t.session_key
+        INNER JOIN target_ts t ON r.session_id = t.session_id
         GROUP BY 1 ORDER BY 1
         """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
 
