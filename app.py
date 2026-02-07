@@ -24,7 +24,7 @@ client = get_bq_client()
 # -------------------------------------------------
 # 2. 데이터 추출 함수 (EASY REPAIR 필터링 포함)
 # -------------------------------------------------
-def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=False):
+def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="시디즈닷컴 (매장 제외)"):
     if client is None:
         return None, None
     
@@ -45,19 +45,28 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
         group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
     # 핵심 지표 쿼리 (.format() 방식으로 안전하게 변수 치환)
-    if exclude_store:
+    if data_source == "시디즈닷컴 (매장 제외)":
+        # 매장 데이터 제외 모드
         query = """
     WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store (정확히 일치)
+        -- 매장 유입 세션 블랙리스트: store 포함 모든 소스
         SELECT DISTINCT 
-            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as unique_session_id
+            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
-            -- traffic_source.source에서 정확히 매칭
-            LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
-            -- event_params의 source에서 정확히 매칭
-            LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store')
+            -- traffic_source.source에서 'store' 포함
+            LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
+            -- traffic_source.medium에서 'store' 포함
+            LOWER(COALESCE(traffic_source.medium, '')) LIKE '%store%' OR
+            -- event_params의 source에서 'store' 포함
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) LIKE '%store%' OR
+            -- event_params의 medium에서 'store' 포함
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) LIKE '%store%' OR
+            -- collected_traffic_source.manual_source에서 'store' 포함
+            LOWER(COALESCE(collected_traffic_source.manual_source, '')) LIKE '%store%' OR
+            -- collected_traffic_source.manual_medium에서 'store' 포함
+            LOWER(COALESCE(collected_traffic_source.manual_medium, '')) LIKE '%store%'
         )
     ),
     base AS (
@@ -71,11 +80,11 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
     filtered_base AS (
-        -- 매장 세션 제외 (고유 세션 ID 기반)
+        -- 매장 세션 제외 (session_key 기반)
         SELECT b.*
         FROM base b
         WHERE CONCAT(b.user_pseudo_id, CAST(b.sid AS STRING)) NOT IN (
-            SELECT unique_session_id FROM store_sessions
+            SELECT session_key FROM store_sessions
         )
     ),
     easy_repair_only_orders AS (
@@ -105,7 +114,73 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
     GROUP BY 1 
     HAVING type IS NOT NULL
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
+    
+    elif data_source == "매장 전용":
+        # 매장 데이터만 보기 모드
+        query = """
+    WITH store_sessions AS (
+        -- 매장 유입 세션: store 포함 모든 소스
+        SELECT DISTINCT 
+            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+        AND (
+            LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
+            LOWER(COALESCE(traffic_source.medium, '')) LIKE '%store%' OR
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) LIKE '%store%' OR
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) LIKE '%store%' OR
+            LOWER(COALESCE(collected_traffic_source.manual_source, '')) LIKE '%store%' OR
+            LOWER(COALESCE(collected_traffic_source.manual_medium, '')) LIKE '%store%'
+        )
+    ),
+    base AS (
+        SELECT 
+            PARSE_DATE('%Y%m%d', event_date) as date,
+            user_pseudo_id, event_name, ecommerce.purchase_revenue, ecommerce.transaction_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
+            items
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+    ),
+    store_only_base AS (
+        -- 매장 세션만 포함 (session_key 기반)
+        SELECT b.*
+        FROM base b
+        WHERE CONCAT(b.user_pseudo_id, CAST(b.sid AS STRING)) IN (
+            SELECT session_key FROM store_sessions
+        )
+    ),
+    easy_repair_only_orders AS (
+        SELECT transaction_id
+        FROM store_only_base, UNNEST(items) as item
+        WHERE event_name = 'purchase'
+        GROUP BY transaction_id
+        HAVING LOGICAL_AND(
+            REGEXP_CONTAINS(UPPER(IFNULL(item.item_category, '')), r'EASY.REPAIR') OR 
+            REGEXP_CONTAINS(UPPER(IFNULL(item.item_name, '')), r'EASY.REPAIR') OR
+            REGEXP_CONTAINS(item.item_name, r'패드|헤드레스트|커버|다리|바퀴|글라이드|블록|좌판|이지리페어')
+        )
+    )
+    SELECT 
+        CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
+        COUNT(DISTINCT user_pseudo_id) as users,
+        COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
+        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
+        COUNTIF(event_name = 'sign_up') as signups,
+        COUNTIF(event_name = 'purchase') as orders,
+        SUM(IFNULL(purchase_revenue, 0)) as revenue,
+        COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
+        SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
+        COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
+        SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
+    FROM store_only_base
+    GROUP BY 1 
+    HAVING type IS NOT NULL
+    """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
+    
     else:
+        # 전체 데이터 모드
         query = """
     WITH base AS (
         SELECT 
@@ -146,19 +221,24 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
 
     # 시계열 데이터
-    if exclude_store:
+    if data_source == "시디즈닷컴 (매장 제외)":
         ts_query = """
         WITH store_sessions AS (
-            -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store (정확히 일치)
+            -- 매장 유입 세션 블랙리스트: store 포함 모든 소스
             SELECT DISTINCT 
-                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as unique_session_id
+                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
             AND (
-                -- traffic_source.source에서 정확히 매칭
-                LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
-                -- event_params의 source에서 정확히 매칭
-                LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store')
+                -- traffic_source에서 'store' 포함
+                LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
+                LOWER(COALESCE(traffic_source.medium, '')) LIKE '%store%' OR
+                -- event_params에서 'store' 포함
+                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) LIKE '%store%' OR
+                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) LIKE '%store%' OR
+                -- collected_traffic_source에서 'store' 포함
+                LOWER(COALESCE(collected_traffic_source.manual_source, '')) LIKE '%store%' OR
+                LOWER(COALESCE(collected_traffic_source.manual_medium, '')) LIKE '%store%'
             )
         ),
         events_base AS (
@@ -178,10 +258,49 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
             COUNTIF(e.event_name = 'purchase') as orders
         FROM events_base e
         WHERE CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING)) NOT IN (
-            SELECT unique_session_id FROM store_sessions
+            SELECT session_key FROM store_sessions
         )
         GROUP BY 1 ORDER BY 1
         """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
+    
+    elif data_source == "매장 전용":
+        ts_query = """
+        WITH store_sessions AS (
+            SELECT DISTINCT 
+                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+            AND (
+                LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
+                LOWER(COALESCE(traffic_source.medium, '')) LIKE '%store%' OR
+                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) LIKE '%store%' OR
+                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) LIKE '%store%' OR
+                LOWER(COALESCE(collected_traffic_source.manual_source, '')) LIKE '%store%' OR
+                LOWER(COALESCE(collected_traffic_source.manual_medium, '')) LIKE '%store%'
+            )
+        ),
+        events_base AS (
+            SELECT 
+                {group_sql} as period_date,
+                user_pseudo_id,
+                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+                event_name,
+                ecommerce.purchase_revenue
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        )
+        SELECT 
+            CAST(period_date AS STRING) as period_label,
+            COUNT(DISTINCT CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING))) as sessions,
+            SUM(IFNULL(e.purchase_revenue, 0)) as revenue,
+            COUNTIF(e.event_name = 'purchase') as orders
+        FROM events_base e
+        WHERE CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING)) IN (
+            SELECT session_key FROM store_sessions
+        )
+        GROUP BY 1 ORDER BY 1
+        """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
+    
     else:
         ts_query = f"""
         SELECT 
@@ -202,7 +321,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
 # -------------------------------------------------
 # 3. 인사이트 데이터 추출 (TOP3 + 증감율)
 # -------------------------------------------------
-def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
+def get_insight_data(start_c, end_c, start_p, end_p, data_source="시디즈닷컴 (매장 제외)"):
     if client is None:
         return None
     
@@ -216,19 +335,24 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     max_date = max(e_c, e_p)
 
     # 제품별 매출 변화 (item_id 기준)
-    if exclude_store:
+    if data_source == "시디즈닷컴 (매장 제외)":
         product_query = """
         WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store (정확히 일치)
+        -- 매장 유입 세션 블랙리스트: store 포함 모든 소스
         SELECT DISTINCT 
-            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as unique_session_id
+            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
-            -- traffic_source.source에서 정확히 매칭
-            LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
-            -- event_params의 source에서 정확히 매칭
-            LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store')
+            -- traffic_source에서 'store' 포함
+            LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
+            LOWER(COALESCE(traffic_source.medium, '')) LIKE '%store%' OR
+            -- event_params에서 'store' 포함
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) LIKE '%store%' OR
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) LIKE '%store%' OR
+            -- collected_traffic_source에서 'store' 포함
+            LOWER(COALESCE(collected_traffic_source.manual_source, '')) LIKE '%store%' OR
+            LOWER(COALESCE(collected_traffic_source.manual_medium, '')) LIKE '%store%'
         )
     ),
     base AS (
@@ -243,11 +367,11 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
     filtered_base AS (
-        -- 매장 세션 제외 (고유 세션 ID 기반)
+        -- 매장 세션 제외 (session_key 기반)
         SELECT b.*
         FROM base b
         WHERE CONCAT(b.user_pseudo_id, CAST(b.sid AS STRING)) NOT IN (
-            SELECT unique_session_id FROM store_sessions
+            SELECT session_key FROM store_sessions
         )
     ),
         """
@@ -743,9 +867,13 @@ today = datetime.now().date()
 with st.sidebar:
     st.header("⚙️ 분석 설정")
     
-    # 매장 데이터 제외 옵션
-    exclude_store = st.checkbox("🏪 매장 데이터 제외 (qr_store)", value=False, 
-                                help="체크 시 qr_store 채널의 모든 데이터를 제외합니다")
+    # 데이터 소스 선택 (3가지 옵션)
+    data_source = st.selectbox(
+        "📊 데이터 소스",
+        options=["시디즈닷컴 (매장 제외)", "전체", "매장 전용"],
+        index=0,  # 기본값: 시디즈닷컴 (매장 제외)
+        help="시디즈닷컴: 온라인 전용 | 전체: 모든 데이터 | 매장 전용: 매장 QR 유입만"
+    )
     
     # 날짜 입력
     curr_date = st.date_input("분석 기간", [today - timedelta(days=7), today - timedelta(days=1)])
@@ -754,11 +882,18 @@ with st.sidebar:
     time_unit = st.selectbox("추이 분석 단위", ["일별", "주별", "월별"])
 
 if len(curr_date) == 2 and len(comp_date) == 2:
-    # 매장 제외 상태 표시
-    if exclude_store:
-        st.info("🏪 매장 데이터(qr_store) 제외 모드 - 온라인 전용 데이터만 표시됩니다")
+    # 데이터 소스 상태 표시
+    if data_source == "시디즈닷컴 (매장 제외)":
+        st.info("🌐 시디즈닷컴 모드 - 온라인 전용 데이터만 표시됩니다")
+    elif data_source == "매장 전용":
+        st.info("🏪 매장 전용 모드 - 매장 QR 유입 데이터만 표시됩니다")
     
-    summary_df, ts_df = get_dashboard_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1], time_unit, exclude_store)
+    summary_df, ts_df = get_dashboard_data(
+        curr_date[0], curr_date[1], 
+        comp_date[0], comp_date[1], 
+        time_unit, 
+        data_source  # exclude_store 대신 data_source 전달
+    )
     
     if summary_df is not None and not summary_df.empty:
         curr = summary_df[summary_df['type'] == 'Current'].iloc[0]
@@ -930,7 +1065,7 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         st.subheader("🧠 데이터 기반 인사이트")
         
         with st.spinner("분석 중..."):
-            insight_data = get_insight_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1], exclude_store)
+            insight_data = get_insight_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1], data_source)
             insights = generate_insights(curr, prev, insight_data)
             st.markdown(insights)
             
