@@ -41,8 +41,9 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     if time_unit == "주별": group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), WEEK)"
     elif time_unit == "월별": group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
-    # --- 1. 매장 전용 모드 (루커스튜디오 수치 100% 동기화) ---
+    # --- 1. 매장 전용 모드 (루커스튜디오 수치 100% 동기화 버전) ---
     if data_source == "매장 전용":
+        # 1. 공통 로직: 세션의 첫 유입 경로가 매장 QR인 세션들을 골라냄
         base_logic = """
         WITH session_base AS (
             SELECT 
@@ -68,7 +69,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         )
         """
 
-        # 메인 카드 지표용 쿼리 (PARSE_DATE 제거 및 비교 로직 수정)
+        # 2. 메인 카드 지표용 쿼리 (날짜 비교 로직 최적화)
         query = base_logic + """
         SELECT 
             CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
@@ -86,20 +87,22 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         """
         query = query.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
 
-        # 시계열 차트용 쿼리
+        # 3. 시계열 차트용 쿼리 (group_sql 에러 해결)
+        # group_sql이 'PARSE_DATE(...)' 형태이므로 이를 단순히 'date' 컬럼 참조로 교체
+        ts_group_sql = "date"
+        if time_unit == "주별": ts_group_sql = "DATE_TRUNC(date, WEEK)"
+        elif time_unit == "월별": ts_group_sql = "DATE_TRUNC(date, MONTH)"
+
         ts_query = base_logic + """
         SELECT 
-            CAST({group_sql_formatted} AS STRING) as period_label,
+            CAST({ts_group_sql} AS STRING) as period_label,
             COUNT(DISTINCT sid) as sessions,
             SUM(CASE WHEN event_name = 'purchase' THEN IFNULL(purchase_revenue, 0) ELSE 0 END) as revenue,
             COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN transaction_id END) as orders
         FROM filtered_sessions
         WHERE date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
         GROUP BY 1 ORDER BY 1
-        """
-        # group_sql 내의 event_date를 date로 변경하여 에러 방지
-        formatted_group_sql = group_sql.replace("event_date", "date")
-        ts_query = ts_query.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c, group_sql_formatted=formatted_group_sql)
+        """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c, ts_group_sql=ts_group_sql)
         
     # --- 2. 시디즈닷컴 (매장 제외) ---
     elif data_source == "시디즈닷컴 (매장 제외)":
