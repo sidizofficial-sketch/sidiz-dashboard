@@ -321,7 +321,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
             _TABLE_SUFFIX as suffix
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-        {store_filter}
+        
     ),
     session_mapping AS (
         SELECT 
@@ -391,13 +391,13 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     WITH current_demo AS (
         SELECT CONCAT(IFNULL(geo.country, 'Unknown'), ' / ', IFNULL(geo.city, 'Unknown')) as location, SUM(ecommerce.purchase_revenue) as revenue 
         FROM `sidiz-458301.analytics_487246344.events_*` 
-        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' {store_filter} 
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' 
         GROUP BY 1
     ),
     previous_demo AS (
         SELECT CONCAT(IFNULL(geo.country, 'Unknown'), ' / ', IFNULL(geo.city, 'Unknown')) as location, SUM(ecommerce.purchase_revenue) as revenue 
         FROM `sidiz-458301.analytics_487246344.events_*` 
-        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' 
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase'
         GROUP BY 1
     )
     SELECT 
@@ -417,13 +417,13 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     WITH current_device AS (
         SELECT device.category as device, SUM(ecommerce.purchase_revenue) as revenue 
         FROM `sidiz-458301.analytics_487246344.events_*` 
-        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' {store_filter} 
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' 
         GROUP BY 1
     ),
     previous_device AS (
         SELECT device.category as device, SUM(ecommerce.purchase_revenue) as revenue 
         FROM `sidiz-458301.analytics_487246344.events_*` 
-        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' 
+        WHERE _TABLE_SUFFIX BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase'
         GROUP BY 1
     )
     SELECT 
@@ -460,7 +460,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
             ) as age_raw
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-        {store_filter}
+        
     ),
     normalized_demographics AS (
         SELECT 
