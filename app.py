@@ -55,9 +55,12 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
-            LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store') OR
-            LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
-            LOWER(collected_traffic_source.manual_source) IN ('store_register_qr', 'qr_store')
+            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'store') OR
+            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'store') OR
+            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'store') OR
+            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'store') OR
+            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'store') OR
+            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'store')
         )
     ),
     base AS (
@@ -226,9 +229,12 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
-            LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store') OR
-            LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
-            LOWER(collected_traffic_source.manual_source) IN ('store_register_qr', 'qr_store')
+            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'store') OR
+            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'store') OR
+            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'store') OR
+            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'store') OR
+            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'store') OR
+            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'store')
         )
     ),
     base AS (
