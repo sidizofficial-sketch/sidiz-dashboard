@@ -25,7 +25,6 @@ client = get_bq_client()
 # 2. 데이터 추출 함수 (EASY REPAIR 필터링 포함)
 # -------------------------------------------------
 
-Python
 def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="시디즈닷컴 (매장 제외)"):
     if client is None: return None, None
     
