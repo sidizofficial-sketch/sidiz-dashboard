@@ -110,56 +110,60 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
     st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
 
-    # 제품별 매출 변화 (item_id 기준 집계 + 최신 제품명 표시)
+    # 제품별 매출 변화 (강화된 정규화 + 모든 이벤트 세션)
     product_query = f"""
     WITH product_events AS (
         SELECT 
-            COALESCE(item.item_id, item.item_name) as product_id,
+            -- [해결 1] ID와 이름을 강화된 정규화로 통합
+            COALESCE(
+                item.item_id,
+                -- 정규화: 특수문자 제거 → 프로모션 문구 제거 → 공백 정리
+                UPPER(TRIM(
+                    REGEXP_REPLACE(
+                        REGEXP_REPLACE(
+                            REGEXP_REPLACE(item.item_name, r'[^A-Z0-9가-힣\\s]', ''),  -- 특수문자 제거
+                            r'^[0-9]+\\s*(리퓨어펀트|할인|이벤트|특가|프로모션|세일)\\s*', ''  -- 앞 프로모션 제거
+                        ),
+                        r'\\s+', ''  -- 모든 공백 제거
+                    )
+                ))
+            ) as product_key,
             item.item_name,
             _TABLE_SUFFIX as date_suffix,
             event_name,
             user_pseudo_id,
-            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') as session_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
             item.quantity,
             item.price,
             event_timestamp
         FROM `sidiz-458301.analytics_487246344.events_*`,
         UNNEST(items) as item
-        WHERE _TABLE_SUFFIX >= '{min(s_p, s_c)}'
-        AND _TABLE_SUFFIX <= '{max(e_p, e_c)}'
+        WHERE _TABLE_SUFFIX BETWEEN '{min(s_p, s_c)}' AND '{max(e_p, e_c)}'
         AND item.item_name IS NOT NULL
     ),
     latest_names AS (
-        -- product_id별 최신 제품명
+        -- 가장 최신 이름을 표시용으로 선택
         SELECT 
-            product_id,
+            product_key,
             ARRAY_AGG(item_name ORDER BY date_suffix DESC, event_timestamp DESC LIMIT 1)[OFFSET(0)] as display_name
         FROM product_events
-        GROUP BY product_id
+        GROUP BY product_key
     ),
     product_metrics AS (
         SELECT 
-            product_id,
-            -- 현재 기간 매출
-            SUM(IF(date_suffix >= '{s_c}' AND date_suffix <= '{e_c}' AND event_name = 'purchase', 
-                COALESCE(price, 0) * COALESCE(quantity, 0), 0)) as curr_rev,
-            -- 이전 기간 매출  
-            SUM(IF(date_suffix >= '{s_p}' AND date_suffix <= '{e_p}' AND event_name = 'purchase', 
-                COALESCE(price, 0) * COALESCE(quantity, 0), 0)) as prev_rev,
-            -- 현재 기간 세션 (view_item만)
-            COUNT(DISTINCT IF(date_suffix >= '{s_c}' AND date_suffix <= '{e_c}' AND event_name = 'view_item',
-                CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)), NULL)) as curr_sess,
-            -- 이전 기간 세션 (view_item만)
-            COUNT(DISTINCT IF(date_suffix >= '{s_p}' AND date_suffix <= '{e_p}' AND event_name = 'view_item',
-                CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)), NULL)) as prev_sess,
-            -- 현재 수량
-            SUM(IF(date_suffix >= '{s_c}' AND date_suffix <= '{e_c}' AND event_name = 'purchase',
-                COALESCE(quantity, 0), 0)) as curr_qty,
-            -- 이전 수량
-            SUM(IF(date_suffix >= '{s_p}' AND date_suffix <= '{e_p}' AND event_name = 'purchase',
-                COALESCE(quantity, 0), 0)) as prev_qty
+            product_key,
+            -- [해결 2] 매출 집계
+            SUM(IF(date_suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase', COALESCE(price, 0) * COALESCE(quantity, 0), 0)) as curr_rev,
+            SUM(IF(date_suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase', COALESCE(price, 0) * COALESCE(quantity, 0), 0)) as prev_rev,
+            
+            -- [해결 3] 세션 집계 - 모든 제품 관련 이벤트
+            COUNT(DISTINCT IF(date_suffix BETWEEN '{s_c}' AND '{e_c}', CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)), NULL)) as curr_sess,
+            COUNT(DISTINCT IF(date_suffix BETWEEN '{s_p}' AND '{e_p}', CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)), NULL)) as prev_sess,
+            
+            SUM(IF(date_suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase', COALESCE(quantity, 0), 0)) as curr_qty,
+            SUM(IF(date_suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase', COALESCE(quantity, 0), 0)) as prev_qty
         FROM product_events
-        GROUP BY product_id
+        GROUP BY product_key
     )
     SELECT 
         n.display_name as product_name,
@@ -172,7 +176,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         m.curr_qty as current_quantity,
         m.prev_qty as previous_quantity
     FROM product_metrics m
-    JOIN latest_names n ON m.product_id = n.product_id
+    JOIN latest_names n ON m.product_key = n.product_key
     WHERE m.curr_rev > 0 OR m.prev_rev > 0
     ORDER BY m.curr_rev DESC
     LIMIT 20
