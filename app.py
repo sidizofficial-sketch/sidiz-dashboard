@@ -25,12 +25,6 @@ client = get_bq_client()
 # 2. 데이터 추출 함수 (EASY REPAIR 필터링 포함)
 # -------------------------------------------------
 
-그 SyntaxError가 계속 발생하는 이유는, 제가 드린 통합 코드(변수 방식)를 적용하면서 기존에 남아있던 elif나 else 문들을 완전히 지우지 않았기 때문일 가능성이 큽니다. 파이썬은 이전 if 문이 이미 끝났는데 갑자기 elif가 나오면 문법 오류를 던집니다.
-
-가장 확실한 방법은 함수 내부를 완전히 비우고, 아래의 에러 방지용 정밀 코드를 통째로 붙여넣는 것입니다. 123라인~135라인에 걸쳐 있던 모든 기존 조건문들을 이 코드가 대체하게 됩니다.
-
-🛠️ SyntaxError 완벽 해결 버전 (함수 전체)
-Python
 def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="시디즈닷컴 (매장 제외)"):
     if client is None: return None, None
     
