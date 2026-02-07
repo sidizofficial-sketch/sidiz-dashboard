@@ -78,17 +78,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
             AND first_med IN ('qr_code', 'qr_coupon', 'qr_product')
         GROUP BY 1 HAVING type IS NOT NULL
         """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
-
-        네, 그 부분은 수정이 필요합니다.
-
-현재 질문주신 ts_query 로직은 **'세션 내에 한 번이라도 매장 코드가 찍힌 모든 세션'**을 다 가져오는 방식이라, 아까 말씀하신 가입자 298건이 틀어지게 했던 범인과 같은 구조입니다. 메인 지표와 시계열 차트의 숫자가 서로 다르면 대시보드 신뢰도가 떨어지겠죠?
-
-방금 맞춘 '세션의 첫 유입 경로' 기준 로직을 ts_query에도 똑같이 적용해야 합니다. 그래야 메인 지표와 시계열 합계가 완벽하게 일치합니다.
-
-🛠️ ts_query 수정 버전 (메인 지표와 100% 일치)
-아래 코드로 ts_query = ... 부분을 교체해 주세요.
-
-Python
         ts_query = """
         WITH session_agg_ts AS (
             SELECT 
