@@ -44,12 +44,10 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     else:
         group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
-Python
-    # --- 1. 매장 전용 모드 (세션 추적 로직으로 루커스튜디오와 일치화) ---
+    # --- 1. 매장 전용 모드 (세션 추적 로직) ---
     if data_source == "매장 전용":
         query = """
         WITH target_sessions AS (
-            -- 매장 QR 소스/매체가 찍힌 '세션'들을 먼저 확보
             SELECT DISTINCT 
                 CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
             FROM `sidiz-458301.analytics_487246344.events_*`
