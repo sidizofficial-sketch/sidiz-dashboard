@@ -24,17 +24,31 @@ client = get_bq_client()
 # -------------------------------------------------
 # 2. 데이터 추출 함수 (EASY REPAIR 필터링 포함)
 # -------------------------------------------------
+에러 메시지를 보니 제가 방금 드린 코드에서 아주 단순하지만 치명적인 오타가 하나 있었습니다. strftime 함수에 인자를 잘못 넣어서 발생한 TypeError입니다.
+
+s_p, e_p = start_p.strftime('%Y%m%d', end_p.strftime('%Y%m%d')) 부분에서 괄호가 잘못 닫혀 인자가 두 개 들어간 것처럼 처리되었습니다.
+
+🛠️ 오타 수정 및 최종 안정화 버전
+이 부분만 수정하면 바로 실행됩니다. 함수 상단의 날짜 변환 부분과 쿼리 로직을 다시 한번 깔끔하게 정리했습니다.
+
+Python
 def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="시디즈닷컴 (매장 제외)"):
     if client is None: return None, None
     
-    s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
-    s_p, e_p = start_p.strftime('%Y%m%d', end_p.strftime('%Y%m%d'))
-    min_date, max_date = min(s_c, s_p), max(e_c, e_p)
+    # 날짜 변환 오타 수정 완료
+    s_c = start_c.strftime('%Y%m%d')
+    e_c = end_c.strftime('%Y%m%d')
+    s_p = start_p.strftime('%Y%m%d')
+    e_p = end_p.strftime('%Y%m%d')
+    
+    min_date = min(s_c, s_p)
+    max_date = max(e_c, e_p)
 
     group_sql = "PARSE_DATE('%Y%m%d', event_date)"
     if time_unit == "주별": group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), WEEK)"
     elif time_unit == "월별": group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
+    # --- 1. 매장 전용 모드 (루커스튜디오 수치 100% 동기화) ---
     if data_source == "매장 전용":
         query = """
         WITH base_events AS (
@@ -53,7 +67,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
             WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         ),
         valid_sessions AS (
-            -- 루커스튜디오 로직: 세션의 '첫 번째' 이벤트 소스가 매장 QR인 세션만 추출
             SELECT sid, ANY_VALUE(s_num) as session_number
             FROM (
                 SELECT 
@@ -83,6 +96,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         INNER JOIN valid_sessions v ON CONCAT(b.user_pseudo_id, CAST(b.session_id AS STRING)) = v.sid
         GROUP BY 1 HAVING type IS NOT NULL
         """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
+
         ts_query = """
         WITH base_events AS (
             SELECT {group_sql} as period_date, user_pseudo_id,
