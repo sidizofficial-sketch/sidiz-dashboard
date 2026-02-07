@@ -28,16 +28,20 @@ client = get_bq_client()
 def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="시디즈닷컴 (매장 제외)"):
     if client is None: return None, None
     
-    # 날짜 변환
+    # 1. 날짜 변환 (문자열)
     s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
     s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
     min_date, max_date = min(s_c, s_p), max(e_c, e_p)
 
-    # 400 에러의 원인인 group_sql 구조를 안전하게 분리
-    base_date_sql = "PARSE_DATE('%Y%m%d', event_date)"
-    if time_unit == "주별": group_sql = f"DATE_TRUNC({base_date_sql}, WEEK)"
-    elif time_unit == "월별": group_sql = f"DATE_TRUNC({base_date_sql}, MONTH)"
-    else: group_sql = base_date_sql
+    # 2. 시계열 그룹화 SQL (400 에러 방지를 위해 원천 데이터 가공형태 정의)
+    # 기본 event_date는 STRING이므로 PARSE_DATE가 필요함
+    base_date_expr = "PARSE_DATE('%Y%m%d', event_date)"
+    if time_unit == "주별":
+        group_sql = f"DATE_TRUNC({base_date_expr}, WEEK)"
+    elif time_unit == "월별":
+        group_sql = f"DATE_TRUNC({base_date_expr}, MONTH)"
+    else:
+        group_sql = base_date_expr
 
     # --- 1. 매장 전용 모드 ---
     if data_source == "매장 전용":
