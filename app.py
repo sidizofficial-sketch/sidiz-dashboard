@@ -110,93 +110,89 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
     st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
 
-    # 제품별 매출 변화 (루커 스튜디오 완전 일치)
+    # 제품별 매출 변화 (상단 지표와 동일 로직)
     product_query = f"""
-    WITH product_events AS (
+    WITH base_events AS (
         SELECT 
-            -- 정규화 키: T90 통합 (루커는 필터로 제외했을 가능성)
+            PARSE_DATE('%Y%m%d', event_date) as date,
+            user_pseudo_id,
+            event_name,
+            ecommerce.purchase_revenue,
+            ecommerce.transaction_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+            items
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+    ),
+    product_items AS (
+        SELECT 
+            date,
+            user_pseudo_id,
+            event_name,
+            sid,
+            -- 정규화 키: 대괄호 제거 + 공백/특수문자 제거
             REGEXP_REPLACE(
                 UPPER(TRIM(REGEXP_REPLACE(item.item_name, r'\\[.*?\\]', ''))),
                 r'\\s+|[^A-Z0-9가-힣]', ''
             ) as match_key,
             item.item_name as original_name,
-            _TABLE_SUFFIX as date_suffix,
-            event_name,
-            user_pseudo_id,
-            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
-            -- 루커의 item_revenue와 동일: price * quantity
             item.price,
-            item.quantity,
-            event_timestamp
-        FROM `sidiz-458301.analytics_487246344.events_*`,
-        UNNEST(items) as item
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_p, s_c).replace("-", "")}' AND '{max(e_p, e_c).replace("-", "")}'
-        AND item.item_name IS NOT NULL
+            item.quantity
+        FROM base_events, UNNEST(items) as item
+        WHERE item.item_name IS NOT NULL
     ),
     latest_product_names AS (
         SELECT 
             match_key,
-            ARRAY_AGG(original_name ORDER BY date_suffix DESC, event_timestamp DESC LIMIT 1)[OFFSET(0)] as product_name
-        FROM product_events
+            ARRAY_AGG(original_name ORDER BY date DESC LIMIT 1)[OFFSET(0)] as product_name
+        FROM product_items
         GROUP BY match_key
     ),
     product_metrics AS (
         SELECT 
             match_key,
-            -- 현재 기간 매출: purchase +, refund -
+            -- 현재 기간 매출 (상단 지표와 동일: SUM(purchase_revenue))
             SUM(CASE 
-                WHEN date_suffix BETWEEN '{s_c.replace("-", "")}' AND '{e_c.replace("-", "")}' THEN
-                    CASE 
-                        WHEN event_name = 'purchase' THEN COALESCE(price, 0) * COALESCE(quantity, 0)
-                        WHEN event_name = 'refund' THEN -1 * COALESCE(price, 0) * COALESCE(quantity, 0)
-                        ELSE 0
-                    END
+                WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') 
+                AND event_name = 'purchase'
+                THEN COALESCE(price, 0) * COALESCE(quantity, 0)
                 ELSE 0
             END) as curr_rev,
             
-            -- 이전 기간 매출: purchase +, refund -
+            -- 이전 기간 매출
             SUM(CASE 
-                WHEN date_suffix BETWEEN '{s_p.replace("-", "")}' AND '{e_p.replace("-", "")}' THEN
-                    CASE 
-                        WHEN event_name = 'purchase' THEN COALESCE(price, 0) * COALESCE(quantity, 0)
-                        WHEN event_name = 'refund' THEN -1 * COALESCE(price, 0) * COALESCE(quantity, 0)
-                        ELSE 0
-                    END
+                WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
+                AND event_name = 'purchase'
+                THEN COALESCE(price, 0) * COALESCE(quantity, 0)
                 ELSE 0
             END) as prev_rev,
             
-            -- GA4 Sessions: 제품 관련 모든 이벤트의 고유 세션 (루커 기준)
+            -- 세션 (상단 지표와 동일: COUNT(DISTINCT CONCAT(user, sid)))
             COUNT(DISTINCT CASE 
-                WHEN date_suffix BETWEEN '{s_c.replace("-", "")}' AND '{e_c.replace("-", "")}' 
-                THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING))
+                WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
+                THEN CONCAT(user_pseudo_id, CAST(sid AS STRING))
             END) as curr_sess,
             
             COUNT(DISTINCT CASE 
-                WHEN date_suffix BETWEEN '{s_p.replace("-", "")}' AND '{e_p.replace("-", "")}' 
-                THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING))
+                WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
+                THEN CONCAT(user_pseudo_id, CAST(sid AS STRING))
             END) as prev_sess,
             
-            -- 수량: purchase +, refund -
+            -- 수량
             SUM(CASE 
-                WHEN date_suffix BETWEEN '{s_c.replace("-", "")}' AND '{e_c.replace("-", "")}' THEN
-                    CASE 
-                        WHEN event_name = 'purchase' THEN COALESCE(quantity, 0)
-                        WHEN event_name = 'refund' THEN -1 * COALESCE(quantity, 0)
-                        ELSE 0
-                    END
+                WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
+                AND event_name = 'purchase'
+                THEN COALESCE(quantity, 0)
                 ELSE 0
             END) as curr_qty,
             
             SUM(CASE 
-                WHEN date_suffix BETWEEN '{s_p.replace("-", "")}' AND '{e_p.replace("-", "")}' THEN
-                    CASE 
-                        WHEN event_name = 'purchase' THEN COALESCE(quantity, 0)
-                        WHEN event_name = 'refund' THEN -1 * COALESCE(quantity, 0)
-                        ELSE 0
-                    END
+                WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
+                AND event_name = 'purchase'
+                THEN COALESCE(quantity, 0)
                 ELSE 0
             END) as prev_qty
-        FROM product_events
+        FROM product_items
         GROUP BY match_key
     )
     SELECT 
