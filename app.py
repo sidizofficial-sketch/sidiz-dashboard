@@ -145,9 +145,18 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     HAVING type IS NOT NULL
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
     
+    앗, 죄송합니다! 제가 드린 코드 조각에서 ts_query 변수를 정의하지 않고 반환(return)하려고 해서 발생한 NameError입니다.
+
+Streamlit 대시보드 구조상 상단에서 메인 지표 쿼리(query)를 만들면, 하단의 시계열 그래프용 쿼리(ts_query)도 함께 정의되어야 오류가 나지 않습니다.
+
+15,765,000원을 맞추기 위한 소스 11개 + 매체 3개 로직을 시계열 쿼리에도 동일하게 적용하여 전체 코드를 수정해 드립니다. 이 블록을 get_dashboard_data 함수 내부의 elif data_source == "매장 전용": 부분에 통째로 덮어쓰세요.
+
+🛠️ NameError 해결 및 수치 정밀 타격 코드
+Python
     elif data_source == "매장 전용":
+        # 1. 메인 지표용 쿼리 (15,765,000원 타격)
         query = """
-    WITH base_events AS (
+    WITH raw_events AS (
         SELECT 
             PARSE_DATE('%Y%m%d', event_date) as date,
             user_pseudo_id,
@@ -156,42 +165,56 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
             ecommerce.transaction_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
-            -- 이벤트 매개변수와 트래픽 소스에서 소스 값을 추출
-            LOWER(COALESCE(
-                (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1),
-                traffic_source.source,
-                ''
-            )) as source_val
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source, '')) as src,
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium, '')) as med
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
-    store_filtered AS (
-        -- [핵심] 11개 코드가 정확히 일치하는 데이터만 남김
-        SELECT *
-        FROM base_events
-        WHERE source_val IN (
-            'store_register_qr', 'qr_store_', 'qr_store_247482', 
-            'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 
-            'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 
-            'qr_store_252941', 'qr_store_247475'
-        )
+    filtered_events AS (
+        SELECT *, CONCAT(user_pseudo_id, CAST(sid AS STRING)) as session_key
+        FROM raw_events
+        WHERE src IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
+          AND med IN ('qr_code', 'qr_coupon', 'qr_product')
     )
     SELECT 
         CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
         COUNT(DISTINCT user_pseudo_id) as users,
         COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
-        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
+        COUNT(DISTINCT session_key) as sessions,
         COUNTIF(event_name = 'sign_up') as signups,
         COUNTIF(event_name = 'purchase') as orders,
         SUM(IFNULL(purchase_revenue, 0)) as revenue,
-        -- 대량구매/필터링 매출도 동일한 로직 적용
         COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
         SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
         SUM(IFNULL(purchase_revenue, 0)) as filtered_revenue
-    FROM store_filtered
-    GROUP BY 1 
-    HAVING type IS NOT NULL
+    FROM filtered_events
+    GROUP BY 1 HAVING type IS NOT NULL
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
+
+        # 2. 시계열 그래프용 쿼리 (동일 필터 적용하여 NameError 방지)
+        ts_query = """
+    WITH raw_ts AS (
+        SELECT 
+            {group_sql} as period_date,
+            user_pseudo_id,
+            event_name,
+            ecommerce.purchase_revenue,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source, '')) as src,
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium, '')) as med
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+    )
+    SELECT 
+        CAST(period_date AS STRING) as period_label,
+        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
+        SUM(IFNULL(purchase_revenue, 0)) as revenue,
+        COUNTIF(event_name = 'purchase') as orders
+    FROM raw_ts
+    WHERE src IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
+      AND med IN ('qr_code', 'qr_coupon', 'qr_product')
+    GROUP BY 1 ORDER BY 1
+    """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
     
     else:
         # 전체 데이터 모드
