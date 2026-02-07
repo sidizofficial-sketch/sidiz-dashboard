@@ -146,57 +146,19 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
     
     elif data_source == "매장 전용":
-        # 매장 데이터만 보기 모드
+        # [수정 포인트] 매장 데이터만 보기 모드: 세션 키 결합 강화 및 LIKE 연산 적용
         query = """
     WITH store_sessions AS (
-        -- 매장 유입 세션: 11개 매장 QR 코드
+        -- 매장 유입 세션 식별: CONCAT으로 유저와 세션ID 결합하여 중복 방지
         SELECT DISTINCT 
             CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
-            -- traffic_source.source
-            LOWER(COALESCE(traffic_source.source, '')) IN (
-                'store_register_qr',
-                'qr_store_',
-                'qr_store_247482',
-                'qr_store_247483',
-                'qr_store_247488',
-                'qr_store_247476',
-                'qr_store_247474',
-                'qr_store_247486',
-                'qr_store_247489',
-                'qr_store_252941',
-                'qr_store_247475'
-            ) OR
-            -- event_params의 source
-            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
-                'store_register_qr',
-                'qr_store_',
-                'qr_store_247482',
-                'qr_store_247483',
-                'qr_store_247488',
-                'qr_store_247476',
-                'qr_store_247474',
-                'qr_store_247486',
-                'qr_store_247489',
-                'qr_store_252941',
-                'qr_store_247475'
-            ) OR
-            -- collected_traffic_source.manual_source
-            LOWER(COALESCE(collected_traffic_source.manual_source, '')) IN (
-                'store_register_qr',
-                'qr_store_',
-                'qr_store_247482',
-                'qr_store_247483',
-                'qr_store_247488',
-                'qr_store_247476',
-                'qr_store_247474',
-                'qr_store_247486',
-                'qr_store_247489',
-                'qr_store_252941',
-                'qr_store_247475'
-            )
+            -- [수정] 11개 코드를 일일이 나열하는 대신 'store' 패턴으로 정밀 매칭 (루커와 동일 방식)
+            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'store_register_qr|qr_store') OR
+            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'store_register_qr|qr_store') OR
+            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'store_register_qr|qr_store')
         )
     ),
     base AS (
@@ -210,14 +172,14 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
     store_only_base AS (
-        -- 매장 세션만 포함 (session_key 기반)
+        -- [핵심] 매장 세션 키와 일치하는 데이터만 추출 (매출 뻥튀기 방지)
         SELECT b.*
         FROM base b
-        WHERE CONCAT(b.user_pseudo_id, CAST(b.sid AS STRING)) IN (
-            SELECT session_key FROM store_sessions
-        )
+        INNER JOIN store_sessions s 
+          ON CONCAT(b.user_pseudo_id, CAST(b.sid AS STRING)) = s.session_key
     ),
     easy_repair_only_orders AS (
+        -- 이지리페어 제외 로직 동일 유지
         SELECT transaction_id
         FROM store_only_base, UNNEST(items) as item
         WHERE event_name = 'purchase'
@@ -235,6 +197,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
         COUNTIF(event_name = 'sign_up') as signups,
         COUNTIF(event_name = 'purchase') as orders,
+        -- [검증 포인트] 여기서 SUM 결과가 15,765,000원에 수렴해야 함
         SUM(IFNULL(purchase_revenue, 0)) as revenue,
         COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
         SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
