@@ -43,8 +43,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     store_src_list = "'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475'"
     store_med_list = "'qr_code', 'qr_coupon', 'qr_product'"
 
-    # 4. 공통 CTE 정의 (중복 제거 및 세션 소스 판별)
-    # 루커스튜디오의 '세션 기반 기여' 모델을 재현하기 위해 FIRST_VALUE 사용
+    # 4. 공통 데이터 추출 로직 (루커스튜디오 세션 기여 방식 재현)
     base_cte = f"""
     WITH base AS (
         SELECT 
@@ -68,7 +67,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     )
     """
 
-    # 5. 데이터 소스별 필터 조건 설정
+    # 5. 데이터 소스 선택에 따른 필터링 정의
     if data_source == "매장 전용":
         source_filter = "WHERE sid IN (SELECT sid FROM store_sessions)"
     elif data_source == "시디즈닷컴 (매장 제외)":
@@ -76,7 +75,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     else: # 전체 데이터
         source_filter = ""
 
-    # 6. 메인 지표 쿼리 (query)
+    # 6. 메인 요약 지표 쿼리 (들여쓰기 주의)
     query = base_cte + f"""
     SELECT 
         CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
@@ -95,7 +94,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     """
     query = query.format(min_date=min_date, max_date=max_date)
 
-    # 7. 시계열 쿼리 (ts_query)
+    # 7. 시계열 그래프 쿼리 (들여쓰기 주의)
     group_sql_fixed = group_sql.replace("PARSE_DATE('%Y%m%d', event_date)", "date")
     ts_query = base_cte + f"""
     SELECT 
@@ -108,16 +107,16 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     {'AND' if source_filter else 'WHERE'} date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
     GROUP BY 1 ORDER BY 1
     """
-    ts_query = ts_query.format(min_date=s_c, max_date=e_c)
+    ts_query = ts_query.format(min_date=min_date, max_date=max_date)
 
-    # 8. 쿼리 실행 및 데이터 반환
+    # 8. 쿼리 실행 및 데이터프레임 반환
     try:
         df_metrics = client.query(query).to_dataframe()
         df_ts = client.query(ts_query).to_dataframe()
         return df_metrics, df_ts
     except Exception as e:
         import streamlit as st
-        st.error(f"⚠️ 데이터 로드 중 오류 발생: {e}")
+        st.error(f"⚠️ 빅쿼리 실행 중 오류가 발생했습니다: {e}")
         return None, None
 
     # --- 2. 시디즈닷컴 (매장 제외) ---
