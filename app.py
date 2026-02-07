@@ -46,6 +46,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
 
     # --- 1. 매장 전용 모드 (세션 추적 로직) ---
     if data_source == "매장 전용":
+        # 메인 지표 쿼리 (JOIN 방식)
         query = """
         WITH target_sessions AS (
             SELECT DISTINCT 
@@ -68,21 +69,22 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
             WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         )
         SELECT 
-            CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
-            COUNT(DISTINCT user_pseudo_id) as users,
-            COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
-            COUNT(DISTINCT session_key) as sessions,
-            COUNTIF(event_name = 'sign_up') as signups,
-            COUNTIF(event_name = 'purchase') as orders,
-            SUM(IFNULL(purchase_revenue, 0)) as revenue,
-            COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
-            SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
-            SUM(IFNULL(purchase_revenue, 0)) as filtered_revenue
-        FROM base_events
-        WHERE session_key IN (SELECT session_key FROM target_sessions)
+            CASE WHEN b.date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
+            COUNT(DISTINCT b.user_pseudo_id) as users,
+            COUNT(DISTINCT CASE WHEN b.s_num = 1 THEN b.user_pseudo_id END) as new_users,
+            COUNT(DISTINCT b.session_key) as sessions,
+            COUNTIF(b.event_name = 'sign_up') as signups,
+            COUNTIF(b.event_name = 'purchase') as orders,
+            SUM(IFNULL(b.purchase_revenue, 0)) as revenue,
+            COUNTIF(b.event_name = 'purchase' AND b.purchase_revenue >= 1500000) as bulk_orders,
+            SUM(CASE WHEN b.event_name = 'purchase' AND b.purchase_revenue >= 1500000 THEN b.purchase_revenue ELSE 0 END) as bulk_revenue,
+            SUM(IFNULL(b.purchase_revenue, 0)) as filtered_revenue
+        FROM base_events b
+        INNER JOIN target_sessions t ON b.session_key = t.session_key
         GROUP BY 1 HAVING type IS NOT NULL
         """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
 
+        # 시계열 쿼리 (JOIN 방식)
         ts_query = """
         WITH target_sessions_ts AS (
             SELECT DISTINCT 
@@ -93,15 +95,24 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
                 LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source)) IN ('store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475')
                 AND LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium)) IN ('qr_code', 'qr_coupon', 'qr_product')
             )
+        ),
+        raw_ts AS (
+            SELECT 
+                {group_sql} as period_date,
+                user_pseudo_id,
+                ecommerce.purchase_revenue,
+                event_name,
+                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
         )
         SELECT 
-            CAST({group_sql} AS STRING) as period_label,
-            COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions,
-            SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue,
-            COUNTIF(event_name = 'purchase') as orders
-        FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-          AND CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) IN (SELECT session_key FROM target_sessions_ts)
+            CAST(r.period_date AS STRING) as period_label,
+            COUNT(DISTINCT r.session_key) as sessions,
+            SUM(IFNULL(r.purchase_revenue, 0)) as revenue,
+            COUNTIF(r.event_name = 'purchase') as orders
+        FROM raw_ts r
+        INNER JOIN target_sessions_ts t ON r.session_key = t.session_key
         GROUP BY 1 ORDER BY 1
         """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
 
