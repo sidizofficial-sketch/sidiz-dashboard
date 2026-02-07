@@ -110,15 +110,25 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
     st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
 
-    # 제품별 매출 변화 (상단 지표와 KST 타임존 완전 동기화)
+    # 제품별 매출 변화 (핵심 성과 요약과 100% 동일 로직)
     product_query = f"""
-    WITH base_data AS (
+    WITH base AS (
         SELECT 
-            -- 상단 요약 지표와 동일한 KST 날짜 변환
-            FORMAT_DATE('%Y%m%d', DATE(TIMESTAMP_MICROS(event_timestamp), 'Asia/Seoul')) as kst_date,
-            event_name,
+            PARSE_DATE('%Y%m%d', event_date) as date,
             user_pseudo_id,
-            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
+            event_name,
+            ecommerce.purchase_revenue,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+            items
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+    ),
+    product_items AS (
+        SELECT 
+            date,
+            user_pseudo_id,
+            event_name,
+            sid,
             -- 제품명 정규화 (T90, 트레보 통합)
             REGEXP_REPLACE(
                 UPPER(TRIM(REGEXP_REPLACE(item.item_name, r'\\[.*?\\]', ''))),
@@ -126,77 +136,62 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             ) as match_key,
             item.item_name as original_name,
             item.price,
-            item.quantity,
-            event_timestamp
-        FROM `sidiz-458301.analytics_487246344.events_*`,
-        UNNEST(items) as item
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_p, s_c).replace("-", "")}' AND '{max(e_p, e_c).replace("-", "")}'
-        AND item.item_name IS NOT NULL
+            item.quantity
+        FROM base, UNNEST(items) as item
+        WHERE item.item_name IS NOT NULL
     ),
     latest_product_names AS (
         SELECT 
             match_key,
-            ARRAY_AGG(original_name ORDER BY kst_date DESC, event_timestamp DESC LIMIT 1)[OFFSET(0)] as product_name
-        FROM base_data
+            ARRAY_AGG(original_name ORDER BY date DESC LIMIT 1)[OFFSET(0)] as product_name
+        FROM product_items
         GROUP BY match_key
     ),
     product_metrics AS (
         SELECT 
             match_key,
-            -- 현재 기간 순 매출 (purchase +, refund -)
+            -- 현재 기간 매출 (핵심 성과 요약과 동일)
             SUM(CASE 
-                WHEN kst_date BETWEEN '{s_c.replace("-", "")}' AND '{e_c.replace("-", "")}' THEN
-                    CASE 
-                        WHEN event_name = 'purchase' THEN COALESCE(price, 0) * COALESCE(quantity, 0)
-                        WHEN event_name = 'refund' THEN -1 * COALESCE(price, 0) * COALESCE(quantity, 0)
-                        ELSE 0
-                    END
+                WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
+                AND event_name = 'purchase'
+                THEN COALESCE(price, 0) * COALESCE(quantity, 0)
                 ELSE 0
             END) as curr_rev,
             
-            -- 이전 기간 순 매출
+            -- 이전 기간 매출
             SUM(CASE 
-                WHEN kst_date BETWEEN '{s_p.replace("-", "")}' AND '{e_p.replace("-", "")}' THEN
-                    CASE 
-                        WHEN event_name = 'purchase' THEN COALESCE(price, 0) * COALESCE(quantity, 0)
-                        WHEN event_name = 'refund' THEN -1 * COALESCE(price, 0) * COALESCE(quantity, 0)
-                        ELSE 0
-                    END
+                WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
+                AND event_name = 'purchase'
+                THEN COALESCE(price, 0) * COALESCE(quantity, 0)
                 ELSE 0
             END) as prev_rev,
             
-            -- 세션 (상단 지표와 동일: CONCAT 방식)
+            -- 세션 (핵심 성과 요약과 동일)
             COUNT(DISTINCT CASE 
-                WHEN kst_date BETWEEN '{s_c.replace("-", "")}' AND '{e_c.replace("-", "")}'
-                THEN CONCAT(user_pseudo_id, CAST(session_id AS STRING))
+                WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
+                THEN CONCAT(user_pseudo_id, CAST(sid AS STRING))
             END) as curr_sess,
             
             COUNT(DISTINCT CASE 
-                WHEN kst_date BETWEEN '{s_p.replace("-", "")}' AND '{e_p.replace("-", "")}'
-                THEN CONCAT(user_pseudo_id, CAST(session_id AS STRING))
+                WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
+                THEN CONCAT(user_pseudo_id, CAST(sid AS STRING))
             END) as prev_sess,
             
-            -- 수량 (purchase +, refund -)
+            -- 수량
             SUM(CASE 
-                WHEN kst_date BETWEEN '{s_c.replace("-", "")}' AND '{e_c.replace("-", "")}' THEN
-                    CASE 
-                        WHEN event_name = 'purchase' THEN COALESCE(quantity, 0)
-                        WHEN event_name = 'refund' THEN -1 * COALESCE(quantity, 0)
-                        ELSE 0
-                    END
+                WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
+                AND event_name = 'purchase'
+                THEN COALESCE(quantity, 0)
                 ELSE 0
             END) as curr_qty,
             
             SUM(CASE 
-                WHEN kst_date BETWEEN '{s_p.replace("-", "")}' AND '{e_p.replace("-", "")}' THEN
-                    CASE 
-                        WHEN event_name = 'purchase' THEN COALESCE(quantity, 0)
-                        WHEN event_name = 'refund' THEN -1 * COALESCE(quantity, 0)
-                        ELSE 0
-                    END
+                WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
+                AND event_name = 'purchase'
+                THEN COALESCE(quantity, 0)
                 ELSE 0
             END) as prev_qty
-        FROM base_data
+        FROM product_items
         GROUP BY match_key
     )
     SELECT 
