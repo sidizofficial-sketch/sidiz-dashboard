@@ -110,11 +110,12 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
     st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
 
-    # 제품별 매출 변화 (제품명 기준 + view_item 세션)
+    # 제품별 매출 변화 (제품명 기준 + 특수문자 제거 + view_item 세션)
     product_query = f"""
     WITH product_events AS (
         SELECT 
-            UPPER(TRIM(REGEXP_REPLACE(item.item_name, r'\\s+', ' '))) as product_name,
+            -- 특수문자 제거 후 공백 정규화 (숫자는 유지하여 세대 구분)
+            UPPER(TRIM(REGEXP_REPLACE(REGEXP_REPLACE(item.item_name, r'[^가-힣a-zA-Z0-9\\s]', ''), r'\\s+', ' '))) as product_name,
             _TABLE_SUFFIX as date_suffix,
             event_name,
             user_pseudo_id,
