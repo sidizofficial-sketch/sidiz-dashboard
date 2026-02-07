@@ -28,8 +28,14 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
     if client is None:
         return None, None
     
-    s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
-    s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
+    # 날짜 변수 미리 변환 (f-string 충돌 방지)
+    s_c = start_c.strftime('%Y%m%d')
+    e_c = end_c.strftime('%Y%m%d')
+    s_p = start_p.strftime('%Y%m%d')
+    e_p = end_p.strftime('%Y%m%d')
+    
+    min_date = min(s_c, s_p)
+    max_date = max(e_c, e_p)
 
     if time_unit == "일별":
         group_sql = "PARSE_DATE('%Y%m%d', event_date)"
@@ -41,12 +47,12 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
     # 핵심 지표 쿼리
     query = f"""
     WITH """ + ("store_sessions AS (\n" +
-    """        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store
+    f"""        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store
         SELECT DISTINCT 
             user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
             LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store') OR
             LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
@@ -61,7 +67,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
             items
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     )""" + (""",
     filtered_base AS (
         -- 매장 세션 제외 (LEFT JOIN 방식)
@@ -161,8 +167,14 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     if client is None:
         return None
     
-    s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
-    s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
+    # 날짜 변수 미리 변환 (f-string 충돌 방지)
+    s_c = start_c.strftime('%Y%m%d')
+    e_c = end_c.strftime('%Y%m%d')
+    s_p = start_p.strftime('%Y%m%d')
+    e_p = end_p.strftime('%Y%m%d')
+    
+    min_date = min(s_c, s_p)
+    max_date = max(e_c, e_p)
 
     # 제품별 매출 변화 (item_id 기준)
     if exclude_store:
@@ -173,7 +185,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
             user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
             LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store') OR
             LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
@@ -189,7 +201,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
             items
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
     filtered_base AS (
         SELECT b.*
@@ -210,7 +222,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
                 (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
                 items
             FROM `sidiz-458301.analytics_487246344.events_*`
-            WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+            WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         ),
         """
     
@@ -320,7 +332,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
             event_timestamp,
             _TABLE_SUFFIX as suffix
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         
     ),
     session_mapping AS (
@@ -459,7 +471,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
                 '미분류'
             ) as age_raw
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         
     ),
     normalized_demographics AS (
