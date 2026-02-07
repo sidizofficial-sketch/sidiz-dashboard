@@ -38,9 +38,27 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
     else:
         group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
-    # 매장 제외 조건 (NULL은 빈 문자열로 처리하여 포함)
+    # 매장 제외 조건 (모든 유입 경로 필드 검사 + 대소문자 무시)
     store_filter = """
-        AND COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '') != 'qr_store'
+        AND user_pseudo_id NOT IN (
+            SELECT DISTINCT user_pseudo_id
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+            AND (
+                -- event_params 내 source/medium/campaign
+                REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'qr[_-]?store') OR
+                REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'qr[_-]?store') OR
+                REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'campaign' LIMIT 1), '')), r'qr[_-]?store') OR
+                -- traffic_source 구조체
+                REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'qr[_-]?store') OR
+                REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'qr[_-]?store') OR
+                REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.name, '')), r'qr[_-]?store') OR
+                -- collected_traffic_source (GA4 신규)
+                REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'qr[_-]?store') OR
+                REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'qr[_-]?store') OR
+                REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_campaign_name, '')), r'qr[_-]?store')
+            )
+        )
     """ if exclude_store else ""
 
     # 핵심 지표 쿼리
@@ -112,9 +130,27 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
     s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
 
-    # 매장 제외 조건 (NULL은 빈 문자열로 처리하여 포함)
+    # 매장 제외 조건 (모든 유입 경로 필드 검사 + 대소문자 무시)
     store_filter = """
-        AND COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '') != 'qr_store'
+        AND user_pseudo_id NOT IN (
+            SELECT DISTINCT user_pseudo_id
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+            AND (
+                -- event_params 내 source/medium/campaign
+                REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'qr[_-]?store') OR
+                REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'qr[_-]?store') OR
+                REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'campaign' LIMIT 1), '')), r'qr[_-]?store') OR
+                -- traffic_source 구조체
+                REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'qr[_-]?store') OR
+                REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'qr[_-]?store') OR
+                REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.name, '')), r'qr[_-]?store') OR
+                -- collected_traffic_source (GA4 신규)
+                REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'qr[_-]?store') OR
+                REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'qr[_-]?store') OR
+                REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_campaign_name, '')), r'qr[_-]?store')
+            )
+        )
     """ if exclude_store else ""
 
     # 제품별 매출 변화 (item_id 기준)
