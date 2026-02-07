@@ -49,24 +49,14 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         # 매장 데이터 제외 모드
         query = """
     WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트: store 포함 모든 소스
+        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store만 정확히 매칭
         SELECT DISTINCT 
             CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
-            -- traffic_source.source에서 'store' 포함
-            LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
-            -- traffic_source.medium에서 'store' 포함
-            LOWER(COALESCE(traffic_source.medium, '')) LIKE '%store%' OR
-            -- event_params의 source에서 'store' 포함
-            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) LIKE '%store%' OR
-            -- event_params의 medium에서 'store' 포함
-            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) LIKE '%store%' OR
-            -- collected_traffic_source.manual_source에서 'store' 포함
-            LOWER(COALESCE(collected_traffic_source.manual_source, '')) LIKE '%store%' OR
-            -- collected_traffic_source.manual_medium에서 'store' 포함
-            LOWER(COALESCE(collected_traffic_source.manual_medium, '')) LIKE '%store%'
+            LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
+            LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store')
         )
     ),
     base AS (
@@ -119,18 +109,14 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         # 매장 데이터만 보기 모드
         query = """
     WITH store_sessions AS (
-        -- 매장 유입 세션: store 포함 모든 소스
+        -- 매장 유입 세션: store_register_qr, qr_store만 정확히 매칭
         SELECT DISTINCT 
             CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
-            LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
-            LOWER(COALESCE(traffic_source.medium, '')) LIKE '%store%' OR
-            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) LIKE '%store%' OR
-            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) LIKE '%store%' OR
-            LOWER(COALESCE(collected_traffic_source.manual_source, '')) LIKE '%store%' OR
-            LOWER(COALESCE(collected_traffic_source.manual_medium, '')) LIKE '%store%'
+            LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
+            LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store')
         )
     ),
     base AS (
@@ -271,12 +257,8 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
             AND (
-                LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
-                LOWER(COALESCE(traffic_source.medium, '')) LIKE '%store%' OR
-                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) LIKE '%store%' OR
-                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) LIKE '%store%' OR
-                LOWER(COALESCE(collected_traffic_source.manual_source, '')) LIKE '%store%' OR
-                LOWER(COALESCE(collected_traffic_source.manual_medium, '')) LIKE '%store%'
+                LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
+                LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store')
             )
         ),
         events_base AS (
