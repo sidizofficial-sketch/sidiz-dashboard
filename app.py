@@ -147,7 +147,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     
     elif data_source == "매장 전용":
         query = """
-    WITH raw_data AS (
+    WITH raw_events AS (
         SELECT 
             PARSE_DATE('%Y%m%d', event_date) as date,
             user_pseudo_id,
@@ -155,42 +155,35 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
             ecommerce.purchase_revenue,
             ecommerce.transaction_id,
             items,
-            -- 세션 ID와 소스를 한 번에 추출
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
-            (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1) as ep_source,
-            traffic_source.source as ts_source
+            -- 소스 정보를 한 곳으로 모음
+            LOWER(COALESCE(
+                (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1),
+                traffic_source.source,
+                ''
+            )) as source_val
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
-    session_classification AS (
-        SELECT 
-            *,
-            -- 유저 ID와 세션 ID를 결합한 고유 키 생성
-            CONCAT(user_pseudo_id, CAST(sid AS STRING)) as session_key,
-            -- 해당 세션이 매장 유입인지 판별 (11개 코드 포함 여부)
-            MAX(CASE 
-                WHEN REGEXP_CONTAINS(LOWER(COALESCE(ts_source, '')), r'store_register_qr|qr_store') 
-                  OR REGEXP_CONTAINS(LOWER(COALESCE(ep_source, '')), r'store_register_qr|qr_store') 
-                THEN 1 ELSE 0 END
-            ) OVER(PARTITION BY user_pseudo_id, sid) as is_store_session
-        FROM raw_data
+    store_sessions AS (
+        -- [수정] 11개 코드를 고정값으로 박아넣음
+        SELECT DISTINCT 
+            CONCAT(user_pseudo_id, CAST(sid AS STRING)) as session_key
+        FROM raw_events
+        WHERE source_val IN (
+            'store_register_qr', 'qr_store_', 'qr_store_247482', 
+            'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 
+            'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 
+            'qr_store_252941', 'qr_store_247475'
+        )
     ),
     store_only_base AS (
-        -- 여기서 매장 세션이 아닌 것(0)을 물리적으로 완전히 제거합니다.
-        SELECT * FROM session_classification 
-        WHERE is_store_session = 1 
-        AND sid IS NOT NULL
-    ),
-    easy_repair_only_orders AS (
-        SELECT transaction_id
-        FROM store_only_base, UNNEST(items) as item
-        WHERE event_name = 'purchase'
-        GROUP BY transaction_id
-        HAVING LOGICAL_AND(
-            REGEXP_CONTAINS(UPPER(IFNULL(item.item_category, '')), r'EASY.REPAIR|패드|헤드레스트|커버|다리|바퀴|글라이드|블록|좌판|이지리페어') OR 
-            REGEXP_CONTAINS(UPPER(IFNULL(item.item_name, '')), r'EASY.REPAIR|패드|헤드레스트|커버|다리|바퀴|글라이드|블록|좌판|이지리페어')
-        )
+        -- 위에서 정의한 11개 코드 세션에 해당하는 데이터만 JOIN으로 남김
+        SELECT r.*, CONCAT(r.user_pseudo_id, CAST(r.sid AS STRING)) as session_key
+        FROM raw_events r
+        INNER JOIN store_sessions s 
+          ON CONCAT(r.user_pseudo_id, CAST(r.sid AS STRING)) = s.session_key
     )
     SELECT 
         CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
@@ -200,10 +193,10 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         COUNTIF(event_name = 'sign_up') as signups,
         COUNTIF(event_name = 'purchase') as orders,
         SUM(IFNULL(purchase_revenue, 0)) as revenue,
+        -- 대량구매/이지리페어 필터는 일단 전체 매출 확인을 위해 기본 SUM을 먼저 확인
         COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
         SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
-        COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
-        SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
+        SUM(IFNULL(purchase_revenue, 0)) as filtered_revenue -- 임시로 전체매출과 동일하게 설정하여 베이스 확인
     FROM store_only_base
     GROUP BY 1 
     HAVING type IS NOT NULL
