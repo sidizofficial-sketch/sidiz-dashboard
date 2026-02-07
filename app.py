@@ -25,6 +25,12 @@ client = get_bq_client()
 # 2. 데이터 추출 함수 (EASY REPAIR 필터링 포함)
 # -------------------------------------------------
 
+그 SyntaxError가 계속 발생하는 이유는, 제가 드린 통합 코드(변수 방식)를 적용하면서 기존에 남아있던 elif나 else 문들을 완전히 지우지 않았기 때문일 가능성이 큽니다. 파이썬은 이전 if 문이 이미 끝났는데 갑자기 elif가 나오면 문법 오류를 던집니다.
+
+가장 확실한 방법은 함수 내부를 완전히 비우고, 아래의 에러 방지용 정밀 코드를 통째로 붙여넣는 것입니다. 123라인~135라인에 걸쳐 있던 모든 기존 조건문들을 이 코드가 대체하게 됩니다.
+
+🛠️ SyntaxError 완벽 해결 버전 (함수 전체)
+Python
 def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="시디즈닷컴 (매장 제외)"):
     if client is None: return None, None
     
@@ -39,11 +45,11 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     elif time_unit == "월별": group_sql = f"DATE_TRUNC({base_date_expr}, MONTH)"
     else: group_sql = base_date_expr
 
-    # 3. 매장 QR 소스 리스트
-    store_src_list = "'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475'"
-    store_med_list = "'qr_code', 'qr_coupon', 'qr_product'"
+    # 3. 매장 QR 소스 리스트 (루커스튜디오 기준)
+    store_srcs = "'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475'"
+    store_meds = "'qr_code', 'qr_coupon', 'qr_product'"
 
-    # 4. 필터 조건 설정 (123라인 에러의 원인이 되는 분기를 변수로 처리)
+    # 4. 필터 조건 변수화 (에러의 원인인 if/elif 구조를 여기서 한 번만 처리)
     if data_source == "매장 전용":
         source_filter = "WHERE sid IN (SELECT sid FROM store_sessions)"
     elif data_source == "시디즈닷컴 (매장 제외)":
@@ -51,7 +57,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     else: # 전체 데이터
         source_filter = ""
 
-    # 5. 메인 지표 쿼리 (루커스튜디오 동기화 로직)
+    # 5. 메인 지표 쿼리 구성
     query = f"""
     WITH base AS (
         SELECT 
@@ -71,7 +77,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     ),
     store_sessions AS (
         SELECT DISTINCT sid FROM base
-        WHERE s_src IN ({store_src_list}) AND s_med IN ({store_med_list})
+        WHERE s_src IN ({store_srcs}) AND s_med IN ({store_meds})
     )
     SELECT 
         CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
@@ -89,7 +95,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     GROUP BY 1 HAVING type IS NOT NULL
     """
 
-    # 6. 시계열 쿼리 (ts_query)
+    # 6. 시계열 쿼리 구성
     group_sql_fixed = group_sql.replace("PARSE_DATE('%Y%m%d', event_date)", "date")
     ts_query = f"""
     WITH base AS (
@@ -108,7 +114,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     ),
     store_sessions AS (
         SELECT DISTINCT sid FROM base
-        WHERE s_src IN ({store_src_list}) AND s_med IN ({store_med_list})
+        WHERE s_src IN ({store_srcs}) AND s_med IN ({store_meds})
     )
     SELECT 
         CAST({group_sql_fixed} AS STRING) as period_label,
@@ -121,16 +127,16 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     GROUP BY 1 ORDER BY 1
     """
 
-    # 7. 실행 및 결과 반환
+    # 7. 실행 및 반환
     try:
         df_metrics = client.query(query).to_dataframe()
         df_ts = client.query(ts_query).to_dataframe()
         return df_metrics, df_ts
     except Exception as e:
         import streamlit as st
-        st.error(f"⚠️ 빅쿼리 실행 중 오류: {e}")
+        st.error(f"⚠️ 데이터 로드 오류: {e}")
         return None, None
-
+        
     # --- 2. 시디즈닷컴 (매장 제외) ---
     elif data_source == "시디즈닷컴 (매장 제외)":
         query = """
