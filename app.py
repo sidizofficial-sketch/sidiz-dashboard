@@ -48,19 +48,16 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
     if exclude_store:
         query = """
     WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store
+        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store (정확히 일치)
         SELECT DISTINCT 
-            user_pseudo_id,
-            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id
+            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as unique_session_id
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
-            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'store')
+            -- traffic_source.source에서 정확히 매칭
+            LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
+            -- event_params의 source에서 정확히 매칭
+            LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store')
         )
     ),
     base AS (
@@ -74,12 +71,12 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
     filtered_base AS (
+        -- 매장 세션 제외 (고유 세션 ID 기반)
         SELECT b.*
         FROM base b
-        LEFT JOIN store_sessions s 
-        ON b.user_pseudo_id = s.user_pseudo_id 
-        AND b.sid = s.session_id
-        WHERE s.user_pseudo_id IS NULL
+        WHERE CONCAT(b.user_pseudo_id, CAST(b.sid AS STRING)) NOT IN (
+            SELECT unique_session_id FROM store_sessions
+        )
     ),
     easy_repair_only_orders AS (
         SELECT transaction_id
@@ -150,18 +147,18 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
 
     # 시계열 데이터
     if exclude_store:
-        ts_query = f"""
+        ts_query = """
         WITH store_sessions AS (
-            -- 매장 유입 세션 블랙리스트
+            -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store (정확히 일치)
             SELECT DISTINCT 
-                user_pseudo_id,
-                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id
+                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as unique_session_id
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
             AND (
-                LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store') OR
+                -- traffic_source.source에서 정확히 매칭
                 LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
-                LOWER(collected_traffic_source.manual_source) IN ('store_register_qr', 'qr_store')
+                -- event_params의 source에서 정확히 매칭
+                LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store')
             )
         ),
         events_base AS (
@@ -180,11 +177,11 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
             SUM(IFNULL(e.purchase_revenue, 0)) as revenue,
             COUNTIF(e.event_name = 'purchase') as orders
         FROM events_base e
-        LEFT JOIN store_sessions s
-        ON e.user_pseudo_id = s.user_pseudo_id AND e.sid = s.session_id
-        WHERE s.user_pseudo_id IS NULL
+        WHERE CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING)) NOT IN (
+            SELECT unique_session_id FROM store_sessions
+        )
         GROUP BY 1 ORDER BY 1
-        """
+        """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
     else:
         ts_query = f"""
         SELECT 
@@ -222,19 +219,16 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     if exclude_store:
         product_query = """
         WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store
+        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store (정확히 일치)
         SELECT DISTINCT 
-            user_pseudo_id,
-            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id
+            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as unique_session_id
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         AND (
-            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'store')
+            -- traffic_source.source에서 정확히 매칭
+            LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
+            -- event_params의 source에서 정확히 매칭
+            LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store')
         )
     ),
     base AS (
@@ -249,11 +243,12 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
     filtered_base AS (
+        -- 매장 세션 제외 (고유 세션 ID 기반)
         SELECT b.*
         FROM base b
-        LEFT JOIN store_sessions s
-        ON b.user_pseudo_id = s.user_pseudo_id AND b.sid = s.session_id
-        WHERE s.user_pseudo_id IS NULL
+        WHERE CONCAT(b.user_pseudo_id, CAST(b.sid AS STRING)) NOT IN (
+            SELECT unique_session_id FROM store_sessions
+        )
     ),
         """
     else:
