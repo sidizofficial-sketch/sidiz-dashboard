@@ -154,7 +154,7 @@ Streamlit 대시보드 구조상 상단에서 메인 지표 쿼리(query)를 만
 🛠️ NameError 해결 및 수치 정밀 타격 코드
 Python
     elif data_source == "매장 전용":
-        # 1. 메인 지표용 쿼리 (15,765,000원 타격)
+        # 1. 메인 지표용 쿼리 (15,765,000원 정밀 타격)
         query = """
     WITH raw_events AS (
         SELECT 
@@ -191,7 +191,7 @@ Python
     GROUP BY 1 HAVING type IS NOT NULL
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
 
-        # 2. 시계열 그래프용 쿼리 (동일 필터 적용하여 NameError 방지)
+        # 2. 시계열 그래프용 쿼리 (NameError 해결)
         ts_query = """
     WITH raw_ts AS (
         SELECT 
