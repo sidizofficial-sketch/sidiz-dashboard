@@ -74,9 +74,8 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
 
     # 핵심 지표 쿼리
     query = f"""
-    """ + (f"""
-    WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store
+    WITH """ + ("store_sessions AS (\n" +
+    """        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store
         SELECT DISTINCT 
             user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id
@@ -88,8 +87,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
             LOWER(collected_traffic_source.manual_source) IN ('store_register_qr', 'qr_store')
         )
     ),
-    """ if exclude_store else "") + f"""
-    base AS (
+    """ if exclude_store else "") + f"""base AS (
         SELECT 
             PARSE_DATE('%Y%m%d', event_date) as date,
             user_pseudo_id, event_name, ecommerce.purchase_revenue, ecommerce.transaction_id,
@@ -98,8 +96,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
             items
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-    """ + ("""
-    ),
+    )""" + (""",
     filtered_base AS (
         -- 매장 세션 제외 (LEFT JOIN 방식)
         SELECT b.*
@@ -108,8 +105,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
         ON b.user_pseudo_id = s.user_pseudo_id 
         AND b.sid = s.session_id
         WHERE s.user_pseudo_id IS NULL
-    """ if exclude_store else "") + """
-    ),
+    )""" if exclude_store else "") + """,
     easy_repair_only_orders AS (
         SELECT transaction_id
         FROM """ + ("filtered_base" if exclude_store else "base") + """, UNNEST(items) as item
