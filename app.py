@@ -69,7 +69,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         )
         """
 
-        # 2. 메인 카드 지표용 쿼리 (날짜 비교 로직 최적화)
+        # 2. 메인 카드 지표용 쿼리 (date는 이미 DATE형이므로 재파싱 금지)
         query = base_logic + """
         SELECT 
             CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
@@ -87,8 +87,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         """
         query = query.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
 
-        # 3. 시계열 차트용 쿼리 (group_sql 에러 해결)
-        # group_sql이 'PARSE_DATE(...)' 형태이므로 이를 단순히 'date' 컬럼 참조로 교체
+        # 3. 시계열 차트용 쿼리 (에러 유발하는 group_sql 대신 전용 로직 사용)
         ts_group_sql = "date"
         if time_unit == "주별": ts_group_sql = "DATE_TRUNC(date, WEEK)"
         elif time_unit == "월별": ts_group_sql = "DATE_TRUNC(date, MONTH)"
