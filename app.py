@@ -164,40 +164,6 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
     s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
 
-    # 매장 제외 조건 (store + qr 동시 포함만 매장으로 간주)
-    store_filter = """
-        AND user_pseudo_id NOT IN (
-            SELECT DISTINCT user_pseudo_id
-            FROM `sidiz-458301.analytics_487246344.events_*`
-            WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-            AND (
-                -- event_params에서 store + qr 동시 체크
-                (REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'qr'))
-                OR
-                (REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'qr'))
-                OR
-                (REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'campaign' LIMIT 1), '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'campaign' LIMIT 1), '')), r'qr'))
-                OR
-                -- traffic_source에서 store + qr 동시 체크
-                (REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'qr'))
-                OR
-                (REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'qr'))
-                OR
-                -- collected_traffic_source에서 store + qr 동시 체크
-                (REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'qr'))
-                OR
-                (REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'store') 
-                 AND REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'qr'))
-            )
-        )
-    """ if exclude_store else ""
-
     # 제품별 매출 변화 (item_id 기준)
     if exclude_store:
         product_query = f"""
