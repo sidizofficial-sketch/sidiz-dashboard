@@ -110,27 +110,36 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
     st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
 
-    # 제품별 매출 변화 (제품명 기준 + 특수문자 제거 + view_item 세션)
+    # 제품별 매출 변화 (item_id 기준 + 최신 제품명 표시)
     product_query = f"""
     WITH product_events AS (
         SELECT 
-            -- 특수문자 제거 후 공백 정규화 (숫자는 유지하여 세대 구분)
-            UPPER(TRIM(REGEXP_REPLACE(REGEXP_REPLACE(item.item_name, r'[^가-힣a-zA-Z0-9\\s]', ''), r'\\s+', ' '))) as product_name,
+            COALESCE(item.item_id, item.item_name) as item_id,
+            item.item_name,
             _TABLE_SUFFIX as date_suffix,
             event_name,
             user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id') as session_id,
             item.quantity,
-            item.price
+            item.price,
+            event_timestamp
         FROM `sidiz-458301.analytics_487246344.events_*`,
         UNNEST(items) as item
         WHERE _TABLE_SUFFIX >= '{min(s_p, s_c)}'
         AND _TABLE_SUFFIX <= '{max(e_p, e_c)}'
         AND item.item_name IS NOT NULL
     ),
+    latest_names AS (
+        -- item_id별 가장 최신 제품명
+        SELECT 
+            item_id,
+            ARRAY_AGG(item_name ORDER BY date_suffix DESC, event_timestamp DESC LIMIT 1)[OFFSET(0)] as latest_name
+        FROM product_events
+        GROUP BY item_id
+    ),
     product_summary AS (
         SELECT 
-            product_name,
+            p.item_id,
             -- 현재 기간 매출
             SUM(IF(date_suffix >= '{s_c}' AND date_suffix <= '{e_c}' AND event_name = 'purchase', 
                 price * quantity, 0)) as curr_rev,
@@ -149,23 +158,24 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             -- 이전 수량
             SUM(IF(date_suffix >= '{s_p}' AND date_suffix <= '{e_p}' AND event_name = 'purchase',
                 quantity, 0)) as prev_qty
-        FROM product_events
-        GROUP BY product_name
+        FROM product_events p
+        GROUP BY p.item_id
     )
     SELECT 
-        product_name,
-        curr_rev as current_revenue,
-        prev_rev as previous_revenue,
-        curr_rev - prev_rev as revenue_change,
-        ROUND(SAFE_DIVIDE((curr_rev - prev_rev) * 100, NULLIF(prev_rev, 0)), 1) as change_pct,
-        curr_sess as current_sessions,
-        prev_sess as previous_sessions,
-        curr_qty as current_quantity,
-        prev_qty as previous_quantity
-    FROM product_summary
-    WHERE curr_rev > 0 OR prev_rev > 0
-    ORDER BY curr_rev DESC
-    LIMIT 20
+        COALESCE(n.latest_name, s.item_id) as product_name,
+        s.curr_rev as current_revenue,
+        s.prev_rev as previous_revenue,
+        s.curr_rev - s.prev_rev as revenue_change,
+        ROUND(SAFE_DIVIDE((s.curr_rev - s.prev_rev) * 100, NULLIF(s.prev_rev, 0)), 1) as change_pct,
+        s.curr_sess as current_sessions,
+        s.prev_sess as previous_sessions,
+        s.curr_qty as current_quantity,
+        s.prev_qty as previous_quantity
+    FROM product_summary s
+    LEFT JOIN latest_names n ON s.item_id = n.item_id
+    WHERE s.curr_rev > 0 OR s.prev_rev > 0
+    ORDER BY s.curr_rev DESC
+    LIMIT 50
     """
 
     # 채널별 매출 & 세션 변화 (통합 쿼리 - 단일 소스)
@@ -402,22 +412,52 @@ def get_insight_data(start_c, end_c, start_p, end_p):
         # 컬럼명 정확히 매칭
         results['product'].columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율', '현재세션', '이전세션', '현재수량', '이전수량']
         
-        # item_id 기준이므로 추가 집계 불필요 (이미 SQL에서 처리됨)
+        # 제품명 정규화 및 그룹화
         if 'product' in results and not results['product'].empty:
             pdf = results['product']
             
-            # 변화량과 증감율 재계산 (안전성)
-            pdf['매출변화'] = pdf['현재매출'] - pdf['이전매출']
-            pdf['증감율'] = (pdf['매출변화'] / pdf['이전매출'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0)
-            pdf['세션변화'] = pdf['현재세션'] - pdf['이전세션']
-            pdf['수량변화'] = pdf['현재수량'] - pdf['이전수량']
+            # 1. 제품명 정규화: 특수문자 제거, 공백 통합, 대문자 변환
+            pdf['정규화명'] = (
+                pdf['제품명']
+                .str.replace(r'[^가-힣a-zA-Z0-9\s]', '', regex=True)  # 특수문자 제거
+                .str.replace(r'\s+', ' ', regex=True)  # 연속 공백 제거
+                .str.strip()
+                .str.upper()
+            )
             
-            # 매출 비중 계산
-            total_revenue = pdf['현재매출'].sum()
-            pdf['매출비중'] = (pdf['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
+            # 2. 정규화된 이름으로 그룹화하여 합산
+            pdf_grouped = pdf.groupby('정규화명', as_index=False).agg({
+                '제품명': 'first',  # 첫 번째 원본 이름 사용
+                '현재매출': 'sum',
+                '이전매출': 'sum',
+                '현재세션': 'sum',
+                '이전세션': 'sum',
+                '현재수량': 'sum',
+                '이전수량': 'sum'
+            })
             
-            # 현재 매출 기준으로 정렬 후 저장
-            results['product'] = pdf.sort_values(by='현재매출', ascending=False).reset_index(drop=True)
+            # 3. 변화량 및 증감율 재계산
+            pdf_grouped['매출변화'] = pdf_grouped['현재매출'] - pdf_grouped['이전매출']
+            pdf_grouped['증감율'] = (
+                (pdf_grouped['매출변화'] / pdf_grouped['이전매출'] * 100)
+                .replace([float('inf'), -float('inf')], 0)
+                .fillna(0)
+            )
+            pdf_grouped['세션변화'] = pdf_grouped['현재세션'] - pdf_grouped['이전세션']
+            pdf_grouped['수량변화'] = pdf_grouped['현재수량'] - pdf_grouped['이전수량']
+            
+            # 4. 매출 비중 계산
+            total_revenue = pdf_grouped['현재매출'].sum()
+            pdf_grouped['매출비중'] = (pdf_grouped['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
+            
+            # 5. 현재 매출 기준 정렬 후 상위 20개
+            results['product'] = (
+                pdf_grouped
+                .sort_values(by='현재매출', ascending=False)
+                .head(20)
+                .reset_index(drop=True)
+                [['제품명', '현재매출', '이전매출', '매출변화', '증감율', '현재세션', '이전세션', '세션변화', '현재수량', '이전수량', '수량변화', '매출비중']]
+            )
         
         results['channel_combined'].columns = ['채널', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
         results['demo'].columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
