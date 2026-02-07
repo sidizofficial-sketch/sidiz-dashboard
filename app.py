@@ -74,6 +74,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
 
     # 핵심 지표 쿼리
     query = f"""
+    """ + (f"""
     WITH store_sessions AS (
         -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store
         SELECT DISTINCT 
@@ -82,14 +83,12 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
         AND (
-            -- event_params의 source
             LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store') OR
-            -- traffic_source
             LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
-            -- collected_traffic_source
             LOWER(collected_traffic_source.manual_source) IN ('store_register_qr', 'qr_store')
         )
     ),
+    """ if exclude_store else "") + f"""
     base AS (
         SELECT 
             PARSE_DATE('%Y%m%d', event_date) as date,
@@ -99,15 +98,21 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
             items
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-        """ + ("""
-        -- 매장 세션 완전 제외
-        AND CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) 
-            NOT IN (SELECT CONCAT(user_pseudo_id, CAST(session_id AS STRING)) FROM store_sessions)
-        """ if exclude_store else "") + """
+    """ + ("""
+    ),
+    filtered_base AS (
+        -- 매장 세션 제외 (LEFT JOIN 방식)
+        SELECT b.*
+        FROM base b
+        LEFT JOIN store_sessions s 
+        ON b.user_pseudo_id = s.user_pseudo_id 
+        AND b.sid = s.session_id
+        WHERE s.user_pseudo_id IS NULL
+    """ if exclude_store else "") + """
     ),
     easy_repair_only_orders AS (
         SELECT transaction_id
-        FROM base, UNNEST(items) as item
+        FROM """ + ("filtered_base" if exclude_store else "base") + """, UNNEST(items) as item
         WHERE event_name = 'purchase'
         GROUP BY transaction_id
         HAVING LOGICAL_AND(
@@ -128,7 +133,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
         SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
         COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
         SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
-    FROM base 
+    FROM """ + ("filtered_base" if exclude_store else "base") + """
     GROUP BY 1 
     HAVING type IS NOT NULL
     """
@@ -148,16 +153,26 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
                 LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
                 LOWER(collected_traffic_source.manual_source) IN ('store_register_qr', 'qr_store')
             )
+        ),
+        events_base AS (
+            SELECT 
+                PARSE_DATE('%Y%m%d', event_date) as event_date,
+                user_pseudo_id,
+                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+                event_name,
+                ecommerce.purchase_revenue
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
         )
         SELECT 
-            CAST({group_sql} AS STRING) as period_label, 
-            COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions,
-            SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue,
-            COUNTIF(event_name = 'purchase') as orders
-        FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-        AND CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))
-            NOT IN (SELECT CONCAT(user_pseudo_id, CAST(session_id AS STRING)) FROM store_sessions)
+            CAST({group_sql} AS STRING) as period_label,
+            COUNT(DISTINCT CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING))) as sessions,
+            SUM(IFNULL(e.purchase_revenue, 0)) as revenue,
+            COUNTIF(e.event_name = 'purchase') as orders
+        FROM events_base e
+        LEFT JOIN store_sessions s
+        ON e.user_pseudo_id = s.user_pseudo_id AND e.sid = s.session_id
+        WHERE s.user_pseudo_id IS NULL
         GROUP BY 1 ORDER BY 1
         """
     else:
@@ -247,11 +262,13 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
             items
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
-        """ + ("""
-        -- 매장 세션 제외
-        AND CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))
-            NOT IN (SELECT CONCAT(user_pseudo_id, CAST(session_id AS STRING)) FROM store_sessions)
-        """ if exclude_store else "") + """
+    ),
+    filtered_base AS (
+        SELECT b.*
+        FROM base b
+        LEFT JOIN store_sessions s
+        ON b.user_pseudo_id = s.user_pseudo_id AND b.sid = s.session_id
+        WHERE s.user_pseudo_id IS NULL
     ),
         """
     else:
@@ -287,7 +304,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
             item.item_name as original_name,
             item.price,
             item.quantity
-        FROM base, UNNEST(items) as item
+        FROM """ + ("filtered_base" if exclude_store else "base") + """, UNNEST(items) as item
         WHERE item.item_name IS NOT NULL
     ),
     latest_product_names AS (
