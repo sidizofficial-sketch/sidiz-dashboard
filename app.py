@@ -53,7 +53,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
             items
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{{min(s_c, s_p)}}' AND '{{max(e_c, e_p)}}'
+        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
         {store_filter}
     ),
     easy_repair_only_orders AS (
@@ -92,7 +92,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
         SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue,
         COUNTIF(event_name = 'purchase') as orders
     FROM `sidiz-458301.analytics_487246344.events_*`
-    WHERE _TABLE_SUFFIX BETWEEN '{{s_c}}' AND '{{e_c}}'
+    WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
     {store_filter}
     GROUP BY 1 ORDER BY 1
     """
@@ -117,7 +117,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
         AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1) != 'qr_store'
     """ if exclude_store else ""
 
-    # 제품별 매출 변화 (핵심 성과 요약과 100% 동일 로직)
+    # 제품별 매출 변화 (item_id 기준)
     product_query = f"""
     WITH base AS (
         SELECT 
@@ -128,7 +128,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
             items
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{{min(s_c, s_p)}}' AND '{{max(e_c, e_p)}}'
+        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
         {store_filter}
     ),
     product_items AS (
@@ -137,10 +137,13 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
             user_pseudo_id,
             event_name,
             sid,
-            -- 제품명 정규화 (T90, 트레보 통합)
-            REGEXP_REPLACE(
-                UPPER(TRIM(REGEXP_REPLACE(item.item_name, r'\\[.*?\\]', ''))),
-                r'\\s+|[^A-Z0-9가-힣]', ''
+            -- item_id 기준 (없으면 정규화된 이름)
+            COALESCE(
+                item.item_id,
+                REGEXP_REPLACE(
+                    UPPER(TRIM(REGEXP_REPLACE(item.item_name, r'\\[.*?\\]', ''))),
+                    r'\\s+|[^A-Z0-9가-힣]', ''
+                )
             ) as match_key,
             item.item_name as original_name,
             item.price,
