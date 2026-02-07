@@ -75,22 +75,19 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
     # 핵심 지표 쿼리
     query = f"""
     WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트 생성
+        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store
         SELECT DISTINCT 
             user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
         AND (
-            -- event_params의 source/medium에서 'store' 검색
-            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'store') OR
-            -- traffic_source에서 'store' 검색
-            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'store') OR
-            -- collected_traffic_source에서 'store' 검색
-            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'store')
+            -- event_params의 source
+            LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store') OR
+            -- traffic_source
+            LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
+            -- collected_traffic_source
+            LOWER(collected_traffic_source.manual_source) IN ('store_register_qr', 'qr_store')
         )
     ),
     base AS (
@@ -103,7 +100,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
         """ + ("""
-        -- 매장 세션 제외
+        -- 매장 세션 완전 제외
         AND CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) 
             NOT IN (SELECT CONCAT(user_pseudo_id, CAST(session_id AS STRING)) FROM store_sessions)
         """ if exclude_store else "") + """
@@ -137,38 +134,43 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
     """
 
     # 시계열 데이터
-    ts_query = f"""
-    """ + (f"""
-    WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트
-        SELECT DISTINCT 
-            user_pseudo_id,
-            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id
+    if exclude_store:
+        ts_query = f"""
+        WITH store_sessions AS (
+            -- 매장 유입 세션 블랙리스트
+            SELECT DISTINCT 
+                user_pseudo_id,
+                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+            AND (
+                LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store') OR
+                LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
+                LOWER(collected_traffic_source.manual_source) IN ('store_register_qr', 'qr_store')
+            )
+        )
+        SELECT 
+            CAST({group_sql} AS STRING) as period_label, 
+            COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions,
+            SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue,
+            COUNTIF(event_name = 'purchase') as orders
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-        AND (
-            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'store')
-        )
-    )
-    """ if exclude_store else "") + f"""
-    SELECT 
-        CAST({group_sql} AS STRING) as period_label, 
-        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions,
-        SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue,
-        COUNTIF(event_name = 'purchase') as orders
-    FROM `sidiz-458301.analytics_487246344.events_*`
-    WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-    """ + ("""
-    AND CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))
-        NOT IN (SELECT CONCAT(user_pseudo_id, CAST(session_id AS STRING)) FROM store_sessions)
-    """ if exclude_store else "") + """
-    GROUP BY 1 ORDER BY 1
-    """
+        AND CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))
+            NOT IN (SELECT CONCAT(user_pseudo_id, CAST(session_id AS STRING)) FROM store_sessions)
+        GROUP BY 1 ORDER BY 1
+        """
+    else:
+        ts_query = f"""
+        SELECT 
+            CAST({group_sql} AS STRING) as period_label, 
+            COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions,
+            SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue,
+            COUNTIF(event_name = 'purchase') as orders
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        GROUP BY 1 ORDER BY 1
+        """
     try:
         return client.query(query).to_dataframe(), client.query(ts_query).to_dataframe()
     except Exception as e:
@@ -220,21 +222,19 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     """ if exclude_store else ""
 
     # 제품별 매출 변화 (item_id 기준)
-    product_query = f"""
-    WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트
+    if exclude_store:
+        product_query = f"""
+        WITH store_sessions AS (
+        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store
         SELECT DISTINCT 
             user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
         AND (
-            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.source, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(traffic_source.medium, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_source, '')), r'store') OR
-            REGEXP_CONTAINS(LOWER(COALESCE(collected_traffic_source.manual_medium, '')), r'store')
+            LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN ('store_register_qr', 'qr_store') OR
+            LOWER(traffic_source.source) IN ('store_register_qr', 'qr_store') OR
+            LOWER(collected_traffic_source.manual_source) IN ('store_register_qr', 'qr_store')
         )
     ),
     base AS (
@@ -253,6 +253,23 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
             NOT IN (SELECT CONCAT(user_pseudo_id, CAST(session_id AS STRING)) FROM store_sessions)
         """ if exclude_store else "") + """
     ),
+        """
+    else:
+        product_query = f"""
+        WITH base AS (
+            SELECT 
+                PARSE_DATE('%Y%m%d', event_date) as date,
+                user_pseudo_id,
+                event_name,
+                ecommerce.purchase_revenue,
+                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+                items
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+        ),
+        """
+    
+    product_query += f"""
     product_items AS (
         SELECT 
             date,
