@@ -28,30 +28,29 @@ client = get_bq_client()
 def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="시디즈닷컴 (매장 제외)"):
     if client is None: return None, None
     
-    # 1. 날짜 변환 (2026년 데이터 기준)
+    # 1. 날짜 및 변수 설정
     s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
     s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
     min_date, max_date = min(s_c, s_p), max(e_c, e_p)
 
-    # 2. 시계열 그룹화 기준 설정
     base_date_expr = "PARSE_DATE('%Y%m%d', event_date)"
     if time_unit == "주별": group_sql = f"DATE_TRUNC({base_date_expr}, WEEK)"
     elif time_unit == "월별": group_sql = f"DATE_TRUNC({base_date_expr}, MONTH)"
     else: group_sql = base_date_expr
 
-    # 3. 매장 QR 소스 리스트 (루커스튜디오 기준)
+    # 매장 소스 리스트 (루커스튜디오 기준)
     store_srcs = "'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475'"
     store_meds = "'qr_code', 'qr_coupon', 'qr_product'"
 
-    # 4. 필터 조건 변수화 (에러 발생 구간을 변수 처리로 해결)
+    # 2. 데이터 소스 필터 결정 (에러 방지를 위해 변수로 처리)
     if data_source == "매장 전용":
         source_filter = "WHERE sid IN (SELECT sid FROM store_sessions)"
     elif data_source == "시디즈닷컴 (매장 제외)":
         source_filter = "WHERE sid NOT IN (SELECT sid FROM store_sessions)"
-    else: # 전체 데이터 모드
+    else: # 전체 데이터
         source_filter = ""
 
-    # 5. 메인 요약 지표 쿼리 (루커스튜디오 61,118,900원 동기화 로직)
+    # 3. 메인 지표 쿼리 (통합형)
     query = f"""
     WITH base AS (
         SELECT 
@@ -89,7 +88,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     GROUP BY 1 HAVING type IS NOT NULL
     """
 
-    # 6. 시계열 그래프용 쿼리 (400 에러 방지)
+    # 4. 시계열 쿼리 (ts_query)
     group_sql_fixed = group_sql.replace("PARSE_DATE('%Y%m%d', event_date)", "date")
     ts_query = f"""
     WITH base AS (
@@ -121,14 +120,14 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     GROUP BY 1 ORDER BY 1
     """
 
-    # 7. 데이터 실행 및 반환
+    # 5. 실행 및 반환
     try:
         df_metrics = client.query(query).to_dataframe()
         df_ts = client.query(ts_query).to_dataframe()
         return df_metrics, df_ts
     except Exception as e:
         import streamlit as st
-        st.error(f"⚠️ 데이터 로드 중 오류 발생: {e}")
+        st.error(f"⚠️ 데이터 로드 중 오류: {e}")
         return None, None
         
     # --- 2. 시디즈닷컴 (매장 제외) ---
