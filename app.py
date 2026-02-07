@@ -44,10 +44,11 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
     else:
         group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
-    # 핵심 지표 쿼리
-    query = f"""
-    WITH """ + ("store_sessions AS (\n" +
-    f"""        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store
+    # 핵심 지표 쿼리 (.format() 방식으로 안전하게 변수 치환)
+    if exclude_store:
+        query = """
+    WITH store_sessions AS (
+        -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store
         SELECT DISTINCT 
             user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id
@@ -59,7 +60,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
             LOWER(collected_traffic_source.manual_source) IN ('store_register_qr', 'qr_store')
         )
     ),
-    """ if exclude_store else "") + f"""base AS (
+    base AS (
         SELECT 
             PARSE_DATE('%Y%m%d', event_date) as date,
             user_pseudo_id, event_name, ecommerce.purchase_revenue, ecommerce.transaction_id,
@@ -68,19 +69,18 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
             items
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-    )""" + (""",
+    ),
     filtered_base AS (
-        -- 매장 세션 제외 (LEFT JOIN 방식)
         SELECT b.*
         FROM base b
         LEFT JOIN store_sessions s 
         ON b.user_pseudo_id = s.user_pseudo_id 
         AND b.sid = s.session_id
         WHERE s.user_pseudo_id IS NULL
-    )""" if exclude_store else "") + """,
+    ),
     easy_repair_only_orders AS (
         SELECT transaction_id
-        FROM """ + ("filtered_base" if exclude_store else "base") + """, UNNEST(items) as item
+        FROM filtered_base, UNNEST(items) as item
         WHERE event_name = 'purchase'
         GROUP BY transaction_id
         HAVING LOGICAL_AND(
@@ -101,10 +101,49 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=
         SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
         COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
         SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
-    FROM """ + ("filtered_base" if exclude_store else "base") + """
+    FROM filtered_base
     GROUP BY 1 
     HAVING type IS NOT NULL
-    """
+    """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
+    else:
+        query = """
+    WITH base AS (
+        SELECT 
+            PARSE_DATE('%Y%m%d', event_date) as date,
+            user_pseudo_id, event_name, ecommerce.purchase_revenue, ecommerce.transaction_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
+            items
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+    ),
+    easy_repair_only_orders AS (
+        SELECT transaction_id
+        FROM base, UNNEST(items) as item
+        WHERE event_name = 'purchase'
+        GROUP BY transaction_id
+        HAVING LOGICAL_AND(
+            REGEXP_CONTAINS(UPPER(IFNULL(item.item_category, '')), r'EASY.REPAIR') OR 
+            REGEXP_CONTAINS(UPPER(IFNULL(item.item_name, '')), r'EASY.REPAIR') OR
+            REGEXP_CONTAINS(item.item_name, r'패드|헤드레스트|커버|다리|바퀴|글라이드|블록|좌판|이지리페어')
+        )
+    )
+    SELECT 
+        CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
+        COUNT(DISTINCT user_pseudo_id) as users,
+        COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
+        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
+        COUNTIF(event_name = 'sign_up') as signups,
+        COUNTIF(event_name = 'purchase') as orders,
+        SUM(IFNULL(purchase_revenue, 0)) as revenue,
+        COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
+        SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
+        COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
+        SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
+    FROM base
+    GROUP BY 1 
+    HAVING type IS NOT NULL
+    """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
 
     # 시계열 데이터
     if exclude_store:
@@ -178,7 +217,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
 
     # 제품별 매출 변화 (item_id 기준)
     if exclude_store:
-        product_query = f"""
+        product_query = """
         WITH store_sessions AS (
         -- 매장 유입 세션 블랙리스트: store_register_qr, qr_store
         SELECT DISTINCT 
@@ -212,7 +251,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     ),
         """
     else:
-        product_query = f"""
+        product_query = """
         WITH base AS (
             SELECT 
                 PARSE_DATE('%Y%m%d', event_date) as date,
@@ -226,7 +265,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
         ),
         """
     
-    product_query += f"""
+    product_query += """
     product_items AS (
         SELECT 
             date,
@@ -316,10 +355,10 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     WHERE m.curr_rev > 0 OR m.prev_rev > 0
     ORDER BY m.curr_rev DESC
     LIMIT 20
-    """
+    """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c, s_p=s_p, e_p=e_p)
 
     # 채널별 매출 & 세션 변화 (통합 쿼리 - 단일 소스)
-    channel_combined_query = f"""
+    channel_combined_query = """
     WITH base_events AS (
         SELECT 
             user_pseudo_id,
@@ -399,7 +438,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     LIMIT 20
     """
     # 지역별 변화
-    demo_query = f"""
+    demo_query = """
     WITH current_demo AS (
         SELECT CONCAT(IFNULL(geo.country, 'Unknown'), ' / ', IFNULL(geo.city, 'Unknown')) as location, SUM(ecommerce.purchase_revenue) as revenue 
         FROM `sidiz-458301.analytics_487246344.events_*` 
@@ -422,10 +461,10 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     FULL OUTER JOIN previous_demo p ON c.location = p.location 
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC 
     LIMIT 10
-    """
+    """.format(s_c=s_c, e_c=e_c, s_p=s_p, e_p=e_p)
 
     # 디바이스별 변화
-    device_query = f"""
+    device_query = """
     WITH current_device AS (
         SELECT device.category as device, SUM(ecommerce.purchase_revenue) as revenue 
         FROM `sidiz-458301.analytics_487246344.events_*` 
@@ -447,10 +486,10 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     FROM current_device c 
     FULL OUTER JOIN previous_device p ON c.device = p.device 
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
-    """
+    """.format(s_c=s_c, e_c=e_c, s_p=s_p, e_p=e_p)
 
     # 인구통계별 매출 & 세션 변화 (user_properties 포함 + 필터 제거)
-    demographics_combined_query = f"""
+    demographics_combined_query = """
     WITH base_events AS (
         SELECT 
             _TABLE_SUFFIX as suffix,
@@ -520,7 +559,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     FROM aggregated
     ORDER BY ABS(IFNULL(revenue_change, 0)) DESC
     LIMIT 10
-    """
+    """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c, s_p=s_p, e_p=e_p)
 
     try:
         # 쿼리 실행
