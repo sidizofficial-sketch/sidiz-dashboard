@@ -24,7 +24,7 @@ client = get_bq_client()
 # -------------------------------------------------
 # 2. 데이터 추출 함수 (EASY REPAIR 필터링 포함)
 # -------------------------------------------------
-def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
+def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, exclude_store=False):
     if client is None:
         return None, None
     
@@ -38,6 +38,11 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
     else:
         group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
+    # 매장 제외 조건
+    store_filter = """
+        AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1) != 'qr_store'
+    """ if exclude_store else ""
+
     # 핵심 지표 쿼리
     query = f"""
     WITH base AS (
@@ -48,7 +53,8 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
             items
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+        WHERE _TABLE_SUFFIX BETWEEN '{{min(s_c, s_p)}}' AND '{{max(e_c, e_p)}}'
+        {store_filter}
     ),
     easy_repair_only_orders AS (
         SELECT transaction_id
@@ -86,10 +92,10 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
         SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue,
         COUNTIF(event_name = 'purchase') as orders
     FROM `sidiz-458301.analytics_487246344.events_*`
-    WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+    WHERE _TABLE_SUFFIX BETWEEN '{{s_c}}' AND '{{e_c}}'
+    {store_filter}
     GROUP BY 1 ORDER BY 1
     """
-
     try:
         return client.query(query).to_dataframe(), client.query(ts_query).to_dataframe()
     except Exception as e:
@@ -99,16 +105,17 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit):
 # -------------------------------------------------
 # 3. 인사이트 데이터 추출 (TOP3 + 증감율)
 # -------------------------------------------------
-def get_insight_data(start_c, end_c, start_p, end_p):
+def get_insight_data(start_c, end_c, start_p, end_p, exclude_store=False):
     if client is None:
         return None
     
     s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
     s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
-    
-    # 디버그: 날짜 범위 출력
-    st.sidebar.write(f"🔍 디버그: 현재 기간 {s_c} ~ {e_c}")
-    st.sidebar.write(f"🔍 디버그: 이전 기간 {s_p} ~ {e_p}")
+
+    # 매장 제외 조건
+    store_filter = """
+        AND (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1) != 'qr_store'
+    """ if exclude_store else ""
 
     # 제품별 매출 변화 (핵심 성과 요약과 100% 동일 로직)
     product_query = f"""
@@ -121,7 +128,8 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
             items
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+        WHERE _TABLE_SUFFIX BETWEEN '{{min(s_c, s_p)}}' AND '{{max(e_c, e_p)}}'
+        {store_filter}
     ),
     product_items AS (
         SELECT 
@@ -226,6 +234,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             _TABLE_SUFFIX as suffix
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+        {store_filter}
     ),
     session_mapping AS (
         SELECT 
@@ -295,7 +304,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     WITH current_demo AS (
         SELECT CONCAT(IFNULL(geo.country, 'Unknown'), ' / ', IFNULL(geo.city, 'Unknown')) as location, SUM(ecommerce.purchase_revenue) as revenue 
         FROM `sidiz-458301.analytics_487246344.events_*` 
-        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' 
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' {store_filter} 
         GROUP BY 1
     ),
     previous_demo AS (
@@ -321,7 +330,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
     WITH current_device AS (
         SELECT device.category as device, SUM(ecommerce.purchase_revenue) as revenue 
         FROM `sidiz-458301.analytics_487246344.events_*` 
-        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' 
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' {store_filter} 
         GROUP BY 1
     ),
     previous_device AS (
@@ -364,6 +373,7 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             ) as age_raw
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min(s_c, s_p)}' AND '{max(e_c, e_p)}'
+        {store_filter}
     ),
     normalized_demographics AS (
         SELECT 
@@ -415,26 +425,13 @@ def get_insight_data(start_c, end_c, start_p, end_p):
 
     try:
         # 쿼리 실행
-        st.sidebar.write("🔄 쿼리 실행 중...")
-        
-        # 채널 통합 쿼리 실행
-        channel_combined_df = client.query(channel_combined_query).to_dataframe()
-        
         results = {
             'product': client.query(product_query).to_dataframe(),
-            'channel_combined': channel_combined_df,  # 통합 데이터
+            'channel_combined': client.query(channel_combined_query).to_dataframe(),
             'demo': client.query(demo_query).to_dataframe(),
             'device': client.query(device_query).to_dataframe(),
             'demographics_combined': client.query(demographics_combined_query).to_dataframe()
         }
-        
-        # 디버그: 각 데이터프레임 크기 출력
-        st.sidebar.write("### 📊 데이터 로드 결과")
-        for key, df in results.items():
-            if df is not None:
-                st.sidebar.write(f"- {key}: {len(df)}개 행")
-            else:
-                st.sidebar.write(f"- {key}: ❌ None")
         
         # NaN을 0으로 명시적 변환
         for key in results:
@@ -457,14 +454,30 @@ def get_insight_data(start_c, end_c, start_p, end_p):
             total_revenue = pdf['현재매출'].sum()
             pdf['매출비중'] = (pdf['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
             
+            # 매출 높은 순 정렬
+            pdf = pdf.sort_values(by='현재매출', ascending=False).reset_index(drop=True)
+            
             results['product'] = pdf
         
         results['channel_combined'].columns = ['채널', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
-        results['demo'].columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
-        results['device'].columns = ['디바이스', '현재매출', '이전매출', '매출변화', '증감율']
-        results['demographics_combined'].columns = ['인구통계', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
+        # 채널별 매출 높은 순 정렬
+        if 'channel_combined' in results and not results['channel_combined'].empty:
+            results['channel_combined'] = results['channel_combined'].sort_values(by='현재매출', ascending=False).reset_index(drop=True)
         
-        st.sidebar.write("✅ 데이터 로드 완료")
+        results['demo'].columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
+        # 지역별 매출 높은 순 정렬
+        if 'demo' in results and not results['demo'].empty:
+            results['demo'] = results['demo'].sort_values(by='현재매출', ascending=False).reset_index(drop=True)
+        
+        results['device'].columns = ['디바이스', '현재매출', '이전매출', '매출변화', '증감율']
+        # 디바이스별 매출 높은 순 정렬
+        if 'device' in results and not results['device'].empty:
+            results['device'] = results['device'].sort_values(by='현재매출', ascending=False).reset_index(drop=True)
+        
+        results['demographics_combined'].columns = ['인구통계', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
+        # 인구통계별 매출 높은 순 정렬
+        if 'demographics_combined' in results and not results['demographics_combined'].empty:
+            results['demographics_combined'] = results['demographics_combined'].sort_values(by='현재매출', ascending=False).reset_index(drop=True)
         
         return results
     except Exception as e:
@@ -591,6 +604,10 @@ today = datetime.now().date()
 with st.sidebar:
     st.header("⚙️ 분석 설정")
     
+    # 매장 데이터 제외 옵션
+    exclude_store = st.checkbox("🏪 매장 데이터 제외 (qr_store)", value=False, 
+                                help="체크 시 qr_store 채널의 모든 데이터를 제외합니다")
+    
     # 날짜 입력
     curr_date = st.date_input("분석 기간", [today - timedelta(days=7), today - timedelta(days=1)])
     comp_date = st.date_input("비교 기간", [today - timedelta(days=14), today - timedelta(days=8)])
@@ -598,7 +615,7 @@ with st.sidebar:
     time_unit = st.selectbox("추이 분석 단위", ["일별", "주별", "월별"])
 
 if len(curr_date) == 2 and len(comp_date) == 2:
-    summary_df, ts_df = get_dashboard_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1], time_unit)
+    summary_df, ts_df = get_dashboard_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1], time_unit, exclude_store)
     
     if summary_df is not None and not summary_df.empty:
         curr = summary_df[summary_df['type'] == 'Current'].iloc[0]
@@ -770,7 +787,7 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         st.subheader("🧠 데이터 기반 인사이트")
         
         with st.spinner("분석 중..."):
-            insight_data = get_insight_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1])
+            insight_data = get_insight_data(curr_date[0], curr_date[1], comp_date[0], comp_date[1], exclude_store)
             insights = generate_insights(curr, prev, insight_data)
             st.markdown(insights)
             
