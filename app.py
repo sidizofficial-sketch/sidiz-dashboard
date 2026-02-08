@@ -49,7 +49,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         # 매장 데이터 제외 모드
         query = """
     WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트: 11개 매장 QR 코드 (source만)
+
         SELECT DISTINCT 
             CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
         FROM `sidiz-458301.analytics_487246344.events_*`
@@ -69,7 +69,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
                 'qr_store_252941',
                 'qr_store_247475'
             ) OR
-            -- event_params의 source
+
             LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
                 'store_register_qr',
                 'qr_store_',
@@ -110,7 +110,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
     filtered_base AS (
-        -- 매장 세션 제외 (session_key 기반)
+
         SELECT b.*
         FROM base b
         WHERE CONCAT(b.user_pseudo_id, CAST(b.sid AS STRING)) NOT IN (
@@ -125,7 +125,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         HAVING LOGICAL_AND(
             REGEXP_CONTAINS(UPPER(IFNULL(item.item_category, '')), r'EASY.REPAIR') OR 
             REGEXP_CONTAINS(UPPER(IFNULL(item.item_name, '')), r'EASY.REPAIR') OR
-            REGEXP_CONTAINS(item.item_name, r'패드|헤드레스트|커버|다리|바퀴|글라이드|블록|좌판|이지리페어')
+            REGEXP_CONTAINS(item.item_name, r'pad|headrest|cover|leg|wheel|glide|block|seat|easy.repair')
         )
     )
     SELECT 
@@ -149,7 +149,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         # 매장 데이터만 보기 모드
         query = """
     WITH store_sessions AS (
-        -- 매장 유입 세션: 11개 매장 QR 코드 (source만)
+
         SELECT DISTINCT 
             CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
         FROM `sidiz-458301.analytics_487246344.events_*`
@@ -169,7 +169,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
                 'qr_store_252941',
                 'qr_store_247475'
             ) OR
-            -- event_params의 source
+
             LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
                 'store_register_qr',
                 'qr_store_',
@@ -210,7 +210,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
     store_only_base AS (
-        -- 매장 세션만 포함 (session_key 기반)
+
         SELECT b.*
         FROM base b
         WHERE CONCAT(b.user_pseudo_id, CAST(b.sid AS STRING)) IN (
@@ -225,7 +225,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         HAVING LOGICAL_AND(
             REGEXP_CONTAINS(UPPER(IFNULL(item.item_category, '')), r'EASY.REPAIR') OR 
             REGEXP_CONTAINS(UPPER(IFNULL(item.item_name, '')), r'EASY.REPAIR') OR
-            REGEXP_CONTAINS(item.item_name, r'패드|헤드레스트|커버|다리|바퀴|글라이드|블록|좌판|이지리페어')
+            REGEXP_CONTAINS(item.item_name, r'pad|headrest|cover|leg|wheel|glide|block|seat|easy.repair')
         )
     )
     SELECT 
@@ -266,7 +266,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         HAVING LOGICAL_AND(
             REGEXP_CONTAINS(UPPER(IFNULL(item.item_category, '')), r'EASY.REPAIR') OR 
             REGEXP_CONTAINS(UPPER(IFNULL(item.item_name, '')), r'EASY.REPAIR') OR
-            REGEXP_CONTAINS(item.item_name, r'패드|헤드레스트|커버|다리|바퀴|글라이드|블록|좌판|이지리페어')
+            REGEXP_CONTAINS(item.item_name, r'pad|headrest|cover|leg|wheel|glide|block|seat|easy.repair')
         )
     )
     SELECT 
@@ -449,21 +449,21 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     product_metrics AS (
         SELECT 
             item_id as match_key,
-            -- 현재 기간 매출
+
             SUM(CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
                 AND event_name = 'purchase'
                 THEN COALESCE(price, 0) * COALESCE(quantity, 0)
                 ELSE 0
             END) as curr_rev,
-            -- 이전 기간 매출
+
             SUM(CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
                 AND event_name = 'purchase'
                 THEN COALESCE(price, 0) * COALESCE(quantity, 0)
                 ELSE 0
             END) as prev_rev,
-            -- 세션
+
             COUNT(DISTINCT CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
                 THEN CONCAT(user_pseudo_id, CAST(sid AS STRING))
@@ -472,7 +472,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
                 THEN CONCAT(user_pseudo_id, CAST(sid AS STRING))
             END) as prev_sess,
-            -- 수량
+
             SUM(CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
                 AND event_name = 'purchase'
@@ -504,16 +504,31 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     ORDER BY m.curr_rev DESC
     LIMIT 20
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c, s_p=s_p, e_p=e_p)
-    # 채널별 매출 & 세션 변화 (통합 쿼리 - 단일 소스)
     channel_combined_query = """
     WITH base_events AS (
         SELECT 
+            _TABLE_SUFFIX as suffix,
             user_pseudo_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
             event_name,
             ecommerce.purchase_revenue,
-            -- 이벤트 파라미터에서만 소스/매체 추출 (traffic_source 사용 중단)
-            LOWER(NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)), '')) as raw_source,
+            event_timestamp,
+            LOWER(NULLIF(TRIM(COALESCE(traffic_source.source, '')), '')) as raw_source,
+            LOWER(NULLIF(TRIM(COALESCE(traffic_source.medium, '')), '')) as raw_medium
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+    ),
+    session_mapping AS (
+        SELECT 
+            suffix,
+            user_pseudo_id,
+            session_id,
+            event_name,
+            purchase_revenue,
+            COALESCE(
+                FIRST_VALUE(raw_source IGNORE NULLS) OVER (
+                    PARTITION BY user_pseudo_id, session_id 
+                    ORDER BY event_timestamp 
                     ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
                 ),
                 '(direct)'
@@ -540,32 +555,28 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     aggregated AS (
         SELECT 
             channel,
-            -- 현재 기간 매출
-            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' THEN COALESCE(purchase_revenue, 0) ELSE 0 END) as current_revenue,
-            -- 이전 기간 매출
-            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' THEN COALESCE(purchase_revenue, 0) ELSE 0 END) as previous_revenue,
-            -- 현재 기간 세션
+            SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' THEN IFNULL(purchase_revenue, 0) ELSE 0 END) as current_revenue,
+            SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' THEN IFNULL(purchase_revenue, 0) ELSE 0 END) as previous_revenue,
             COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN unique_session END) as current_sessions,
-            -- 이전 기간 세션
             COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN unique_session END) as previous_sessions
         FROM events_with_channel
         GROUP BY 1
     )
     SELECT 
-        channel as channel_name,
-        COALESCE(current_revenue, 0) as current_revenue,
-        COALESCE(previous_revenue, 0) as previous_revenue,
-        COALESCE(current_revenue, 0) - COALESCE(previous_revenue, 0) as revenue_change,
-        ROUND(SAFE_DIVIDE((COALESCE(current_revenue, 0) - COALESCE(previous_revenue, 0)) * 100, NULLIF(COALESCE(previous_revenue, 0), 0)), 1) as revenue_change_pct,
-        COALESCE(current_sessions, 0) as current_sessions,
-        COALESCE(previous_sessions, 0) as previous_sessions,
-        COALESCE(current_sessions, 0) - COALESCE(previous_sessions, 0) as sessions_change,
-        ROUND(SAFE_DIVIDE((COALESCE(current_sessions, 0) - COALESCE(previous_sessions, 0)) * 100, NULLIF(COALESCE(previous_sessions, 0), 0)), 1) as sessions_change_pct
+        channel,
+        IFNULL(current_revenue, 0) as current_revenue,
+        IFNULL(previous_revenue, 0) as previous_revenue,
+        IFNULL(current_revenue - previous_revenue, 0) as revenue_change,
+        ROUND(SAFE_DIVIDE((current_revenue - previous_revenue) * 100, NULLIF(previous_revenue, 0)), 1) as revenue_change_pct,
+        IFNULL(current_sessions, 0) as current_sessions,
+        IFNULL(previous_sessions, 0) as previous_sessions,
+        IFNULL(current_sessions - previous_sessions, 0) as sessions_change,
+        ROUND(SAFE_DIVIDE((current_sessions - previous_sessions) * 100, NULLIF(previous_sessions, 0)), 1) as sessions_change_pct
     FROM aggregated
-    ORDER BY COALESCE(current_revenue, 0) DESC
-    LIMIT 20
-    """
-    # 지역별 변화
+    WHERE current_revenue > 0 OR previous_revenue > 0 OR current_sessions > 0 OR previous_sessions > 0
+    ORDER BY ABS(IFNULL(current_revenue - previous_revenue, 0)) DESC
+    LIMIT 10
+    """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c, s_p=s_p, e_p=e_p)
     demo_query = """
     WITH current_demo AS (
         SELECT CONCAT(IFNULL(geo.country, 'Unknown'), ' / ', IFNULL(geo.city, 'Unknown')) as location, SUM(ecommerce.purchase_revenue) as revenue 
@@ -625,17 +636,17 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
             event_name,
             ecommerce.purchase_revenue,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
-            -- event_params에서 성별 추출 (여러 키 시도)
+
             COALESCE(
                 LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key IN ('u_gender', 'gender', 'sex', 'user_gender') LIMIT 1)),
                 LOWER((SELECT value.string_value FROM UNNEST(user_properties) WHERE key IN ('u_gender', 'gender', 'sex', 'user_gender') LIMIT 1)),
                 ''
             ) as gender_raw,
-            -- event_params에서 연령 추출 (여러 키 시도)
+
             COALESCE(
                 (SELECT value.string_value FROM UNNEST(event_params) WHERE key IN ('u_age', 'age', 'age_group', 'user_age') LIMIT 1),
                 (SELECT value.string_value FROM UNNEST(user_properties) WHERE key IN ('u_age', 'age', 'age_group', 'user_age') LIMIT 1),
-                '미분류'
+                'Unknown'
             ) as age_raw
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
@@ -649,33 +660,33 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
             event_name,
             purchase_revenue,
             CASE 
-                WHEN gender_raw IN ('male', 'm', '남성', '1') THEN '남성'
-                WHEN gender_raw IN ('female', 'f', '여성', '2') THEN '여성'
-                ELSE '미분류'
+                WHEN gender_raw IN ('male', 'm', 'male_ko', '1') THEN 'Male'
+                WHEN gender_raw IN ('female', 'f', 'female_ko', '2') THEN 'Female'
+                ELSE 'Unknown'
             END as gender_normalized,
-            COALESCE(NULLIF(age_raw, ''), '미분류') as age_normalized
+            COALESCE(NULLIF(age_raw, ''), 'Unknown') as age_normalized
         FROM base_events
     ),
     aggregated AS (
         SELECT 
             CONCAT(
-                COALESCE(gender_normalized, '미분류'), 
+                COALESCE(gender_normalized, 'Unknown'), 
                 ' / ', 
-                COALESCE(age_normalized, '미분류')
+                COALESCE(age_normalized, 'Unknown')
             ) as demographic,
-            -- 현재 기간 매출
+
             SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' THEN IFNULL(purchase_revenue, 0) ELSE 0 END) as current_revenue,
-            -- 이전 기간 매출
+
             SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' THEN IFNULL(purchase_revenue, 0) ELSE 0 END) as previous_revenue,
-            -- 현재 기간 세션
+
             COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as current_sessions,
-            -- 이전 기간 세션
+
             COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as previous_sessions
         FROM normalized_demographics
         GROUP BY 1
     )
     SELECT 
-        COALESCE(demographic, '미분류 / 미분류') as demographic,
+        COALESCE(demographic, 'Unknown / Unknown') as demographic,
         IFNULL(current_revenue, 0) as current_revenue,
         IFNULL(previous_revenue, 0) as previous_revenue,
         IFNULL(current_revenue - previous_revenue, 0) as revenue_change,
@@ -814,7 +825,7 @@ def generate_insights(curr, prev, insight_data):
         try:
             # '미분류 / 미분류'가 아닌 데이터만 필터링
             demo_df = insight_data['demographics_combined']
-            demo_df_filtered = demo_df[~demo_df['인구통계'].str.contains('미분류', na=False)]
+            demo_df_filtered = demo_df[~demo_df['인구통계'].str.contains('Unknown', na=False)]
             
             if not demo_df_filtered.empty and len(demo_df_filtered) > 0:
                 insights.append(f"\n### 👥 인구통계 매출 영향 TOP3")
@@ -829,7 +840,7 @@ def generate_insights(curr, prev, insight_data):
     if 'demographics_combined' in insight_data and insight_data['demographics_combined'] is not None and not insight_data['demographics_combined'].empty:
         try:
             demo_df = insight_data['demographics_combined']
-            demo_df_filtered = demo_df[~demo_df['인구통계'].str.contains('미분류', na=False)]
+            demo_df_filtered = demo_df[~demo_df['인구통계'].str.contains('Unknown', na=False)]
             
             if not demo_df_filtered.empty and len(demo_df_filtered) > 0:
                 demo_ses_top3 = demo_df_filtered.sort_values('세션변화', ascending=False, key=abs).head(3)
