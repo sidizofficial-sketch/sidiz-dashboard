@@ -489,11 +489,11 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
         GROUP BY match_key
     )
     SELECT 
-        n.product_name as 제품명,
-        m.curr_rev as 현재매출,
-        m.prev_rev as 이전매출,
-        m.curr_rev - m.prev_rev as 매출변화,
-        ROUND(SAFE_DIVIDE((m.curr_rev - m.prev_rev) * 100, NULLIF(m.prev_rev, 0)), 1) as 증감율,
+        n.product_name as product_name,
+        m.curr_rev as current_revenue,
+        m.prev_rev as previous_revenue,
+        m.curr_rev - m.prev_rev as revenue_change,
+        ROUND(SAFE_DIVIDE((m.curr_rev - m.prev_rev) * 100, NULLIF(m.prev_rev, 0)), 1) as revenue_change_pct,
         m.curr_sess as current_sessions,
         m.prev_sess as previous_sessions,
         m.curr_qty as current_quantity,
@@ -705,8 +705,19 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
                 numeric_cols = results[key].select_dtypes(include=['float64', 'int64']).columns
                 results[key][numeric_cols] = results[key][numeric_cols].fillna(0)
         
-        # 컬럼명 정확히 매칭
-        results['product'].columns = ['제품명', '현재매출', '이전매출', '매출변화', '증감율', '현재세션', '이전세션', '현재수량', '이전수량']
+        # product 컬럼명을 한글로 변경
+        if 'product' in results and not results['product'].empty:
+            results['product'].rename(columns={
+                'product_name': '제품명',
+                'current_revenue': '현재매출',
+                'previous_revenue': '이전매출',
+                'revenue_change': '매출변화',
+                'revenue_change_pct': '증감율',
+                'current_sessions': '현재세션',
+                'previous_sessions': '이전세션',
+                'current_quantity': '현재수량',
+                'previous_quantity': '이전수량'
+            }, inplace=True)
         
         # SQL에서 이미 정규화 및 그룹화 완료 - 추가 처리만 수행
         if 'product' in results and not results['product'].empty:
