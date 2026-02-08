@@ -235,15 +235,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="ì
             )
         )
     ),
-                'qr_store_247476',
-                'qr_store_247474',
-                'qr_store_247486',
-                'qr_store_247489',
-                'qr_store_252941',
-                'qr_store_247475'
-            )
-        )
-    ),
     base AS (
         SELECT 
             PARSE_DATE('%Y%m%d', event_date) as date,
