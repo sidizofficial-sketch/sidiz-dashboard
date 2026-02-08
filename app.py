@@ -1,4 +1,4 @@
-# SIDIZ Dashboard v2.3 - Fan-out 중복 제거 완료 버전
+# SIDIZ Dashboard v2.4 - Fan-out 중복 제거 + 정합성 복구 완료 버전
 import streamlit as st
 from google.cloud import bigquery
 import pandas as pd
@@ -22,7 +22,7 @@ def get_bq_client():
 client = get_bq_client()
 
 # -------------------------------------------------
-# 2. 데이터 추출 함수 (Fan-out 중복 제거 적용)
+# 2. 데이터 추출 함수 (수정 완료)
 # -------------------------------------------------
 def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_source="온라인 단독"):
     if client is None:
@@ -46,16 +46,16 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
     else:
         group_sql = "PARSE_DATE('%Y%m%d', event_date)"
     
-    # 매장 소스 리스트 (공통)
-    store_sources = """('qr_store_247486', 'qr_store_247482', 'qr_store_252941', 'qr_store_247476',
-                         'store_register_qr', 'qr_store_247483', 'qr_store_247488', 'qr_store_247474',
-                         'qr_store_247489', 'qr_store_247475', 'qr_store_247485', 'qr_store_')"""
+    # 매장 소스 리스트
+    store_sources = ('qr_store_247486', 'qr_store_247482', 'qr_store_252941', 'qr_store_247476',
+                     'store_register_qr', 'qr_store_247483', 'qr_store_247488', 'qr_store_247474',
+                     'qr_store_247489', 'qr_store_247475', 'qr_store_247485', 'qr_store_')
     
     # ========================================
     # 전체 모드 (기존 유지)
     # ========================================
     if data_source == "전체":
-        query = """
+        query = f"""
         WITH base AS (
             SELECT 
                 PARSE_DATE('%Y%m%d', event_date) as date,
@@ -95,9 +95,9 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
         FROM base
         GROUP BY 1 
         HAVING type IS NOT NULL
-        """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
+        """
         
-        ts_query = """
+        ts_query = f"""
         SELECT 
             CAST({group_sql} AS STRING) as period_label,
             COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions,
@@ -106,12 +106,18 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
         GROUP BY 1 ORDER BY 1
-        """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
+        """
     
     # ========================================
-    # 매장 단독 모드 (🔥 중복 제거 수정)
+    # 매장/온라인 모드 (세션 기준 필터링)
     # ========================================
-    elif data_source == "매장 단독":
+    else:
+        # 매장 여부에 따라 필터 조건 결정
+        if data_source == "매장 단독":
+            source_filter = f"sfs.first_source IN {store_sources}"
+        else:  # 온라인 단독
+            source_filter = f"sfs.first_source NOT IN {store_sources}"
+        
         query = f"""
         WITH session_first_source_raw AS (
             SELECT 
@@ -120,7 +126,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
                 FIRST_VALUE(LOWER(COALESCE(
                     (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1),
                     traffic_source.source,
-                    ''
+                    '(direct)'
                 ))) OVER (
                     PARTITION BY user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1)
                     ORDER BY event_timestamp
@@ -136,6 +142,11 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             FROM session_first_source_raw
             GROUP BY user_pseudo_id, sid
         ),
+        filtered_sessions AS (
+            SELECT user_pseudo_id, sid
+            FROM session_first_source sfs
+            WHERE {source_filter}
+        ),
         base AS (
             SELECT 
                 PARSE_DATE('%Y%m%d', e.event_date) as date,
@@ -145,14 +156,12 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
                 e.ecommerce.transaction_id,
                 (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
                 (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
-                e.items,
-                sfs.first_source
+                e.items
             FROM `sidiz-458301.analytics_487246344.events_*` e
-            INNER JOIN session_first_source sfs 
-            ON e.user_pseudo_id = sfs.user_pseudo_id 
-            AND (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) = sfs.sid
+            INNER JOIN filtered_sessions fs
+            ON e.user_pseudo_id = fs.user_pseudo_id 
+            AND (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) = fs.sid
             WHERE e._TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-            AND sfs.first_source IN {store_sources}
         ),
         easy_repair_only_orders AS (
             SELECT transaction_id
@@ -190,7 +199,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
                 FIRST_VALUE(LOWER(COALESCE(
                     (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1),
                     traffic_source.source,
-                    ''
+                    '(direct)'
                 ))) OVER (
                     PARTITION BY user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1)
                     ORDER BY event_timestamp
@@ -206,126 +215,10 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             FROM session_first_source_raw
             GROUP BY user_pseudo_id, sid
         ),
-        base AS (
-            SELECT 
-                {group_sql} as period_date,
-                e.user_pseudo_id,
-                e.event_name,
-                e.ecommerce.purchase_revenue,
-                (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid
-            FROM `sidiz-458301.analytics_487246344.events_*` e
-            INNER JOIN session_first_source sfs 
-            ON e.user_pseudo_id = sfs.user_pseudo_id 
-            AND (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) = sfs.sid
-            WHERE e._TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-            AND sfs.first_source IN {store_sources}
-        )
-        SELECT 
-            CAST(period_date AS STRING) as period_label,
-            COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
-            SUM(IFNULL(purchase_revenue, 0)) as revenue,
-            COUNTIF(event_name = 'purchase') as orders
-        FROM base
-        GROUP BY 1 ORDER BY 1
-        """
-    
-    # ========================================
-    # 온라인 단독 모드 (🔥 중복 제거 수정)
-    # ========================================
-    else:  # data_source == "온라인 단독"
-        query = f"""
-        WITH session_first_source_raw AS (
-            SELECT 
-                user_pseudo_id,
-                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
-                FIRST_VALUE(LOWER(COALESCE(
-                    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1),
-                    traffic_source.source,
-                    ''
-                ))) OVER (
-                    PARTITION BY user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1)
-                    ORDER BY event_timestamp
-                ) as first_source
-            FROM `sidiz-458301.analytics_487246344.events_*`
-            WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-        ),
-        session_first_source AS (
-            SELECT 
-                user_pseudo_id,
-                sid,
-                ANY_VALUE(first_source) as first_source
-            FROM session_first_source_raw
-            GROUP BY user_pseudo_id, sid
-        ),
-        base AS (
-            SELECT 
-                PARSE_DATE('%Y%m%d', e.event_date) as date,
-                e.user_pseudo_id,
-                e.event_name,
-                e.ecommerce.purchase_revenue,
-                e.ecommerce.transaction_id,
-                (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
-                (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
-                e.items,
-                sfs.first_source
-            FROM `sidiz-458301.analytics_487246344.events_*` e
-            LEFT JOIN session_first_source sfs 
-            ON e.user_pseudo_id = sfs.user_pseudo_id 
-            AND (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) = sfs.sid
-            WHERE e._TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-            AND (sfs.first_source IS NULL OR sfs.first_source NOT IN {store_sources})
-        ),
-        easy_repair_only_orders AS (
-            SELECT transaction_id
-            FROM base, UNNEST(items) as item
-            WHERE event_name = 'purchase'
-            GROUP BY transaction_id
-            HAVING LOGICAL_AND(
-                REGEXP_CONTAINS(UPPER(IFNULL(item.item_category, '')), r'EASY.REPAIR') OR 
-                REGEXP_CONTAINS(UPPER(IFNULL(item.item_name, '')), r'EASY.REPAIR') OR
-                REGEXP_CONTAINS(item.item_name, r'pad|headrest|cover|leg|wheel|glide|block|seat|easy.repair')
-            )
-        )
-        SELECT 
-            CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
-            COUNT(DISTINCT user_pseudo_id) as users,
-            COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
-            COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
-            COUNTIF(event_name = 'sign_up') as signups,
-            COUNTIF(event_name = 'purchase') as orders,
-            SUM(IFNULL(purchase_revenue, 0)) as revenue,
-            COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
-            SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
-            COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
-            SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
-        FROM base
-        GROUP BY 1 
-        HAVING type IS NOT NULL
-        """
-        
-        ts_query = f"""
-        WITH session_first_source_raw AS (
-            SELECT 
-                user_pseudo_id,
-                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
-                FIRST_VALUE(LOWER(COALESCE(
-                    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1),
-                    traffic_source.source,
-                    ''
-                ))) OVER (
-                    PARTITION BY user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1)
-                    ORDER BY event_timestamp
-                ) as first_source
-            FROM `sidiz-458301.analytics_487246344.events_*`
-            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-        ),
-        session_first_source AS (
-            SELECT 
-                user_pseudo_id,
-                sid,
-                ANY_VALUE(first_source) as first_source
-            FROM session_first_source_raw
-            GROUP BY user_pseudo_id, sid
+        filtered_sessions AS (
+            SELECT user_pseudo_id, sid
+            FROM session_first_source sfs
+            WHERE {source_filter}
         ),
         base AS (
             SELECT 
@@ -335,11 +228,10 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
                 e.ecommerce.purchase_revenue,
                 (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid
             FROM `sidiz-458301.analytics_487246344.events_*` e
-            LEFT JOIN session_first_source sfs 
-            ON e.user_pseudo_id = sfs.user_pseudo_id 
-            AND (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) = sfs.sid
+            INNER JOIN filtered_sessions fs
+            ON e.user_pseudo_id = fs.user_pseudo_id 
+            AND (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) = fs.sid
             WHERE e._TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-            AND (sfs.first_source IS NULL OR sfs.first_source NOT IN {store_sources})
         )
         SELECT 
             CAST(period_date AS STRING) as period_label,
@@ -361,7 +253,6 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     if client is None:
         return None
     
-    # 날짜 변수 미리 변환 (f-string 충돌 방지)
     s_c = start_c.strftime('%Y%m%d')
     e_c = end_c.strftime('%Y%m%d')
     s_p = start_p.strftime('%Y%m%d')
@@ -370,7 +261,6 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     min_date = min(s_c, s_p)
     max_date = max(e_c, e_p)
 
-    # 제품별 매출 변화 (item_id 기준)
     product_query = """
     WITH base AS (
         SELECT 
@@ -405,21 +295,18 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     product_metrics AS (
         SELECT 
             item_id as match_key,
-
             SUM(CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
                 AND event_name = 'purchase'
                 THEN COALESCE(price, 0) * COALESCE(quantity, 0)
                 ELSE 0
             END) as curr_rev,
-
             SUM(CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
                 AND event_name = 'purchase'
                 THEN COALESCE(price, 0) * COALESCE(quantity, 0)
                 ELSE 0
             END) as prev_rev,
-
             COUNT(DISTINCT CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
                 THEN CONCAT(user_pseudo_id, CAST(sid AS STRING))
@@ -428,7 +315,6 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
                 THEN CONCAT(user_pseudo_id, CAST(sid AS STRING))
             END) as prev_sess,
-
             SUM(CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
                 AND event_name = 'purchase'
@@ -560,7 +446,6 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     LIMIT 10
     """.format(s_c=s_c, e_c=e_c, s_p=s_p, e_p=e_p)
 
-    # 디바이스별 변화
     device_query = """
     WITH current_device AS (
         SELECT device.category as device, SUM(ecommerce.purchase_revenue) as revenue 
@@ -585,7 +470,6 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     ORDER BY ABS(IFNULL(c.revenue, 0) - IFNULL(p.revenue, 0)) DESC
     """.format(s_c=s_c, e_c=e_c, s_p=s_p, e_p=e_p)
 
-    # 인구통계별 매출 & 세션 변화 (user_properties 포함 + 필터 제거)
     demographics_combined_query = """
     WITH base_events AS (
         SELECT 
@@ -594,13 +478,11 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
             event_name,
             ecommerce.purchase_revenue,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as session_id,
-
             COALESCE(
                 LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key IN ('u_gender', 'gender', 'sex', 'user_gender') LIMIT 1)),
                 LOWER((SELECT value.string_value FROM UNNEST(user_properties) WHERE key IN ('u_gender', 'gender', 'sex', 'user_gender') LIMIT 1)),
                 ''
             ) as gender_raw,
-
             COALESCE(
                 (SELECT value.string_value FROM UNNEST(event_params) WHERE key IN ('u_age', 'age', 'age_group', 'user_age') LIMIT 1),
                 (SELECT value.string_value FROM UNNEST(user_properties) WHERE key IN ('u_age', 'age', 'age_group', 'user_age') LIMIT 1),
@@ -608,7 +490,6 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
             ) as age_raw
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-        
     ),
     normalized_demographics AS (
         SELECT 
@@ -632,13 +513,9 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
                 ' / ', 
                 COALESCE(age_normalized, 'Unknown')
             ) as demographic,
-
             SUM(CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' AND event_name = 'purchase' THEN IFNULL(purchase_revenue, 0) ELSE 0 END) as current_revenue,
-
             SUM(CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' AND event_name = 'purchase' THEN IFNULL(purchase_revenue, 0) ELSE 0 END) as previous_revenue,
-
             COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_c}' AND '{e_c}' THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as current_sessions,
-
             COUNT(DISTINCT CASE WHEN suffix BETWEEN '{s_p}' AND '{e_p}' THEN CONCAT(user_pseudo_id, '-', CAST(session_id AS STRING)) END) as previous_sessions
         FROM normalized_demographics
         GROUP BY 1
@@ -659,7 +536,6 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c, s_p=s_p, e_p=e_p)
 
     try:
-        # 쿼리 실행
         results = {
             'product': client.query(product_query).to_dataframe(),
             'channel_combined': client.query(channel_combined_query).to_dataframe(),
@@ -668,13 +544,11 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
             'demographics_combined': client.query(demographics_combined_query).to_dataframe()
         }
         
-        # NaN을 0으로 명시적 변환
         for key in results:
             if results[key] is not None and not results[key].empty:
                 numeric_cols = results[key].select_dtypes(include=['float64', 'int64']).columns
                 results[key][numeric_cols] = results[key][numeric_cols].fillna(0)
         
-        # product 컬럼명을 한글로 변경
         if 'product' in results and not results['product'].empty:
             results['product'].rename(columns={
                 'product_name': '제품명',
@@ -688,40 +562,28 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
                 'previous_quantity': '이전수량'
             }, inplace=True)
         
-        # SQL에서 이미 정규화 및 그룹화 완료 - 추가 처리만 수행
         if 'product' in results and not results['product'].empty:
             pdf = results['product']
-            
-            # 변화량 계산
             pdf['세션변화'] = pdf['현재세션'] - pdf['이전세션']
             pdf['수량변화'] = pdf['현재수량'] - pdf['이전수량']
-            
-            # 매출 비중 계산
             total_revenue = pdf['현재매출'].sum()
             pdf['매출비중'] = (pdf['현재매출'] / total_revenue * 100 if total_revenue > 0 else 0).round(1)
-            
-            # 매출 높은 순 정렬
             pdf = pdf.sort_values(by='현재매출', ascending=False).reset_index(drop=True)
-            
             results['product'] = pdf
         
         results['channel_combined'].columns = ['채널', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
-        # 채널별 매출 높은 순 정렬
         if 'channel_combined' in results and not results['channel_combined'].empty:
             results['channel_combined'] = results['channel_combined'].sort_values(by='현재매출', ascending=False).reset_index(drop=True)
         
         results['demo'].columns = ['지역', '현재매출', '이전매출', '매출변화', '증감율']
-        # 지역별 매출 높은 순 정렬
         if 'demo' in results and not results['demo'].empty:
             results['demo'] = results['demo'].sort_values(by='현재매출', ascending=False).reset_index(drop=True)
         
         results['device'].columns = ['디바이스', '현재매출', '이전매출', '매출변화', '증감율']
-        # 디바이스별 매출 높은 순 정렬
         if 'device' in results and not results['device'].empty:
             results['device'] = results['device'].sort_values(by='현재매출', ascending=False).reset_index(drop=True)
         
         results['demographics_combined'].columns = ['인구통계', '현재매출', '이전매출', '매출변화', '매출증감율', '현재세션', '이전세션', '세션변화', '세션증감율']
-        # 인구통계별 매출 높은 순 정렬
         if 'demographics_combined' in results and not results['demographics_combined'].empty:
             results['demographics_combined'] = results['demographics_combined'].sort_values(by='현재매출', ascending=False).reset_index(drop=True)
         
@@ -733,17 +595,12 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
         st.sidebar.code(traceback.format_exc())
         return None
 
-# -------------------------------------------------
-# 4. 데이터 기반 인사이트 생성
-# -------------------------------------------------
 def generate_insights(curr, prev, insight_data):
     insights = []
     
-    # insight_data 유효성 검사
     if not insight_data:
         return "📊 데이터 수집 중입니다. 잠시 후 다시 확인해주세요."
     
-    # 1. 전체 매출 변동
     rev_change = curr['revenue'] - prev['revenue']
     rev_pct = (rev_change / prev['revenue'] * 100) if prev['revenue'] > 0 else 0
     
@@ -752,7 +609,6 @@ def generate_insights(curr, prev, insight_data):
         insights.append(f"### 📊 전체 매출 {direction}")
         insights.append(f"매출이 **₩{abs(rev_change):,.0f} ({abs(rev_pct):.1f}%) {direction}**했습니다.")
     
-    # 2. 제품 영향 (TOP3)
     if 'product' in insight_data and insight_data['product'] is not None and not insight_data['product'].empty:
         insights.append(f"\n### 🏆 주요 제품 영향 TOP3")
         for idx, row in insight_data['product'].head(3).iterrows():
@@ -760,7 +616,6 @@ def generate_insights(curr, prev, insight_data):
                 direction = "↑" if row['매출변화'] > 0 else "↓"
                 insights.append(f"**{idx+1}. {row['제품명']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['증감율']:+.1f}%)")
     
-    # 3. 채널 매출 영향 (TOP3)
     if 'channel_combined' in insight_data and insight_data['channel_combined'] is not None and not insight_data['channel_combined'].empty:
         insights.append(f"\n### 🎯 주요 채널 매출 영향 TOP3")
         for idx, row in insight_data['channel_combined'].head(3).iterrows():
@@ -768,20 +623,16 @@ def generate_insights(curr, prev, insight_data):
                 direction = "↑" if row['매출변화'] > 0 else "↓"
                 insights.append(f"**{idx+1}. {row['채널']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['매출증감율']:+.1f}%)")
     
-    # 4. 채널 유입 영향 (TOP3)
     if 'channel_combined' in insight_data and insight_data['channel_combined'] is not None and not insight_data['channel_combined'].empty:
         insights.append(f"\n### 🚪 주요 채널 유입 영향 TOP3")
-        # 세션 변화량 기준으로 정렬
         channel_sessions_top3 = insight_data['channel_combined'].sort_values('세션변화', ascending=False, key=abs).head(3)
         for idx, (i, row) in enumerate(channel_sessions_top3.iterrows()):
             if abs(row['세션변화']) > 100:
                 direction = "↑" if row['세션변화'] > 0 else "↓"
                 insights.append(f"**{idx+1}. {row['채널']}** {direction} {abs(row['세션변화']):,.0f}세션 ({row['세션증감율']:+.1f}%)")
     
-    # 5. 인구통계 매출 영향 (TOP3) - 강화된 예외 처리
     if 'demographics_combined' in insight_data and insight_data['demographics_combined'] is not None and not insight_data['demographics_combined'].empty:
         try:
-            # '미분류 / 미분류'가 아닌 데이터만 필터링
             demo_df = insight_data['demographics_combined']
             demo_df_filtered = demo_df[~demo_df['인구통계'].str.contains('Unknown', na=False)]
             
@@ -792,9 +643,8 @@ def generate_insights(curr, prev, insight_data):
                         direction = "↑" if row['매출변화'] > 0 else "↓"
                         insights.append(f"**{idx+1}. {row['인구통계']}** {direction} ₩{abs(row['매출변화']):,.0f} ({row['매출증감율']:+.1f}%)")
         except Exception as e:
-            pass  # 인구통계 데이터 오류 시 조용히 스킵
+            pass
     
-    # 6. 인구통계 유입 영향 (TOP3) - 강화된 예외 처리
     if 'demographics_combined' in insight_data and insight_data['demographics_combined'] is not None and not insight_data['demographics_combined'].empty:
         try:
             demo_df = insight_data['demographics_combined']
@@ -809,9 +659,8 @@ def generate_insights(curr, prev, insight_data):
                             direction = "↑" if row['세션변화'] > 0 else "↓"
                             insights.append(f"**{idx+1}. {row['인구통계']}** {direction} {abs(row['세션변화']):,.0f}세션 ({row['세션증감율']:+.1f}%)")
         except Exception as e:
-            pass  # 인구통계 데이터 오류 시 조용히 스킵
+            pass
     
-    # 7. 대량 구매 영향
     bulk_change = curr['bulk_revenue'] - prev['bulk_revenue']
     bulk_pct = (bulk_change / prev['bulk_revenue'] * 100) if prev['bulk_revenue'] > 0 else 0
     
@@ -820,7 +669,6 @@ def generate_insights(curr, prev, insight_data):
         insights.append(f"\n### 💼 대량 구매 영향")
         insights.append(f"대량 구매(150만원↑) 매출이 **₩{abs(bulk_change):,.0f} ({abs(bulk_pct):.1f}%) {direction}**했습니다.")
     
-    # 8. 지역 변화
     if 'demo' in insight_data and insight_data['demo'] is not None and not insight_data['demo'].empty:
         top_demo = insight_data['demo'].iloc[0]
         if abs(top_demo['매출변화']) > 1000000:
@@ -828,7 +676,6 @@ def generate_insights(curr, prev, insight_data):
             insights.append(f"\n### 🌍 지역별 변화")
             insights.append(f"**{top_demo['지역']}** {direction} ₩{abs(top_demo['매출변화']):,.0f} ({top_demo['증감율']:+.1f}%)")
     
-    # 9. 전환율 변화
     curr_cr = (curr['orders'] / curr['sessions'] * 100) if curr['sessions'] > 0 else 0
     prev_cr = (prev['orders'] / prev['sessions'] * 100) if prev['sessions'] > 0 else 0
     cr_change = curr_cr - prev_cr
@@ -850,28 +697,24 @@ today = datetime.now().date()
 with st.sidebar:
     st.header("⚙️ 분석 설정")
     
-    # 데이터 소스 선택 (3가지 옵션)
     data_source = st.selectbox(
         "📊 데이터 소스",
         options=["온라인 단독", "전체", "매장 단독"],
-        index=0,  # 기본값: 온라인 단독
+        index=0,
         help="온라인 단독: 매장 제외 | 전체: 모든 데이터 | 매장 단독: 매장 QR만"
     )
     
-    # 날짜 입력
     curr_date = st.date_input("분석 기간", [today - timedelta(days=7), today - timedelta(days=1)])
     comp_date = st.date_input("비교 기간", [today - timedelta(days=14), today - timedelta(days=8)])
-    
     time_unit = st.selectbox("추이 분석 단위", ["일별", "주별", "월별"])
 
 if len(curr_date) == 2 and len(comp_date) == 2:
-    # 데이터 소스 상태 표시
     if data_source == "온라인 단독":
-        st.info("🌐 **온라인 단독 모드** - 매장 QR로 시작하지 않은 세션의 데이터만 표시 (세션 시작 소스 기준, Fan-out 중복 제거 완료)")
+        st.info("🌐 **온라인 단독 모드** - 매장 QR로 시작하지 않은 세션만 집계 (중복 제거 완료)")
     elif data_source == "매장 단독":
-        st.info("🏪 **매장 유입 세션 기준 (Session Start Attribution)** - 매장 QR을 통해 쇼핑을 시작한 모든 세션의 매출을 집계합니다. (Fan-out 중복 제거 완료)")
+        st.info("🏪 **매장 단독 모드** - 매장 QR로 시작한 세션만 집계 (중복 제거 완료)")
     else:
-        st.info("📊 **전체 데이터 모드** - 모든 세션의 데이터를 표시합니다.")
+        st.info("📊 **전체 데이터 모드** - 모든 세션 집계")
     
     summary_df, ts_df = get_dashboard_data(
         curr_date[0], curr_date[1], 
@@ -889,10 +732,8 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                 return "0%"
             return f"{((c - p) / p * 100):+.1f}%"
 
-        # [10대 지표 - 2줄 5개씩]
         st.subheader("🎯 핵심 성과 요약")
         
-        # 첫 번째 줄 (5개)
         cols = st.columns(5)
         cols[0].metric("활성 사용자", f"{int(curr['users']):,}명", get_delta(curr['users'], prev['users']))
         cols[1].metric("신규 사용자", f"{int(curr['new_users']):,}명", get_delta(curr['new_users'], prev['new_users']))
@@ -903,7 +744,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         p_nv = (prev['new_users']/prev['users']*100) if prev['users'] > 0 else 0
         cols[4].metric("신규 방문율", f"{c_nv:.1f}%", f"{c_nv-p_nv:+.1f}%p")
         
-        # 두 번째 줄 (5개)
         cols = st.columns(5)
         cols[0].metric("주문 수", f"{int(curr['orders']):,}건", get_delta(curr['orders'], prev['orders']))
         cols[1].metric("총 매출액", f"₩{int(curr['revenue']):,}", get_delta(curr['revenue'], prev['revenue']))
@@ -916,7 +756,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         p_aov = (prev['revenue']/prev['orders']) if prev['orders'] > 0 else 0
         cols[3].metric("평균 객단가", f"₩{int(c_aov):,}", get_delta(c_aov, p_aov))
         
-        # EASY REPAIR만 구매한 주문 제외 객단가
         c_filtered_aov = (curr['filtered_revenue']/curr['filtered_orders']) if curr.get('filtered_orders', 0) > 0 else 0
         p_filtered_aov = (prev['filtered_revenue']/prev['filtered_orders']) if prev.get('filtered_orders', 0) > 0 else 0
         
@@ -926,7 +765,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         else:
             cols[4].metric("필터링 객단가", "데이터 없음", help="EASY REPAIR만 구매한 주문 제외")
 
-        # [대량 구매]
         st.markdown("---")
         st.subheader("📦 대량 구매 세그먼트 (150만 원↑)")
         b1, b2, b3 = st.columns(3)
@@ -934,7 +772,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
         b2.metric("대량 구매 매출", f"₩{int(curr['bulk_revenue']):,}", get_delta(curr['bulk_revenue'], prev['bulk_revenue']))
         b3.metric("대량 매출 비중", f"{(curr['bulk_revenue']/curr['revenue']*100 if curr['revenue']>0 else 0):.1f}%")
         
-        # 대량 구매 상세 품목 (접기/펼치기)
         with st.expander("🔍 대량 구매 품목별 상세 보기"):
             bulk_detail_query = f"""
             SELECT 
@@ -957,7 +794,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                     bulk_detail.columns = ['제품명', '주문수', '수량', '매출액']
                     bulk_detail['매출비중'] = (bulk_detail['매출액'] / bulk_detail['매출액'].sum() * 100).round(1)
                     
-                    # 포맷팅
                     display_bulk = bulk_detail.copy()
                     display_bulk.insert(0, '순위', range(1, len(display_bulk) + 1))
                     display_bulk['주문수'] = display_bulk['주문수'].apply(lambda x: f"{int(x)}건")
@@ -971,8 +807,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
             except Exception as e:
                 st.error(f"대량 구매 상세 조회 오류: {e}")
 
-
-        # [개선된 매출 추이 차트]
         st.markdown("---")
         st.subheader(f"📊 {time_unit} 매출 추이")
         
@@ -981,7 +815,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
             
             fig = make_subplots(specs=[[{"secondary_y": True}]])
             
-            # 세션 수 (선 그래프)
             fig.add_trace(
                 go.Scatter(
                     x=ts_df['period_label'], 
@@ -994,7 +827,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                 secondary_y=False
             )
             
-            # 매출액 (막대 그래프)
             fig.add_trace(
                 go.Bar(
                     x=ts_df['period_label'], 
@@ -1008,7 +840,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                 secondary_y=True
             )
             
-            # 전환율 (점선)
             fig.add_trace(
                 go.Scatter(
                     x=ts_df['period_label'], 
@@ -1045,7 +876,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
             
             st.plotly_chart(fig, use_container_width=True)
 
-        # [데이터 인사이트]
         st.markdown("---")
         st.subheader("🧠 데이터 기반 인사이트")
         
@@ -1054,7 +884,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
             insights = generate_insights(curr, prev, insight_data)
             st.markdown(insights)
             
-            # [개선된 상세 데이터 테이블]
             with st.expander("📋 상세 분석 데이터 보기"):
                 if insight_data:
                     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -1065,7 +894,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                         "디바이스별 분석"
                     ])
                     
-                    # 숫자 포맷 함수 (안전한 예외 처리 포함)
                     def format_currency(val):
                         try:
                             if pd.isna(val) or val == 0:
@@ -1092,13 +920,9 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                     
                     with tab1:
                         if 'product' in insight_data and not insight_data['product'].empty:
-                            # 가공을 위한 복사본 생성
                             display_df = insight_data['product'].copy()
-                            
-                            # 순위 추가 (1부터 시작)
                             display_df.insert(0, '순위', range(1, len(display_df) + 1))
                             
-                            # 표시용 포맷팅 (순서 중요: 계산이 모두 끝난 후 문자열로 변환)
                             display_df['현재매출'] = display_df['현재매출'].apply(format_currency)
                             display_df['이전매출'] = display_df['이전매출'].apply(format_currency)
                             display_df['매출변화'] = display_df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
@@ -1111,7 +935,6 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                             display_df['이전수량'] = display_df['이전수량'].apply(lambda x: f"{int(x)}개")
                             display_df['수량변화'] = display_df['수량변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {int(abs(x))}개")
                             
-                            # 컬럼 선택 및 순서
                             cols_to_show = ['순위', '제품명', '현재매출', '매출비중', '이전매출', '매출변화', '증감율', 
                                           '현재세션', '이전세션', '세션변화', '현재수량', '이전수량', '수량변화']
                             st.dataframe(display_df[cols_to_show], use_container_width=True, height=600)
@@ -1122,17 +945,14 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                         if 'channel_combined' in insight_data and not insight_data['channel_combined'].empty:
                             df = insight_data['channel_combined'].copy()
                             
-                            # 매출 비중 계산
                             total_revenue = df['현재매출'].sum()
                             if total_revenue > 0:
                                 df['매출비중'] = (df['현재매출'] / total_revenue * 100).round(1)
                             else:
                                 df['매출비중'] = 0
                             
-                            # 순위 추가 (1부터 시작)
                             df.insert(0, '순위', range(1, len(df) + 1))
                             
-                            # 포맷 적용
                             df['현재매출'] = df['현재매출'].apply(format_currency)
                             df['이전매출'] = df['이전매출'].apply(format_currency)
                             df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
@@ -1153,17 +973,14 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                         if 'demographics_combined' in insight_data and not insight_data['demographics_combined'].empty:
                             df = insight_data['demographics_combined'].copy()
                             
-                            # 매출 비중 계산
                             total_revenue = df['현재매출'].sum()
                             if total_revenue > 0:
                                 df['매출비중'] = (df['현재매출'] / total_revenue * 100).round(1)
                             else:
                                 df['매출비중'] = 0
                             
-                            # 순위 추가
                             df.insert(0, '순위', range(1, len(df) + 1))
                             
-                            # 포맷 적용
                             df['현재매출'] = df['현재매출'].apply(format_currency)
                             df['이전매출'] = df['이전매출'].apply(format_currency)
                             df['매출변화'] = df['매출변화'].apply(lambda x: f"{'↑' if x > 0 else '↓'} {format_currency(abs(x))}")
@@ -1184,14 +1001,12 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                         if 'demo' in insight_data and not insight_data['demo'].empty:
                             df = insight_data['demo'].copy()
                             
-                            # 매출 비중 계산
                             total_revenue = df['현재매출'].sum()
                             if total_revenue > 0:
                                 df['매출비중'] = (df['현재매출'] / total_revenue * 100).round(1)
                             else:
                                 df['매출비중'] = 0
                             
-                            # 순위 추가
                             df.insert(0, '순위', range(1, len(df) + 1))
                             
                             df['현재매출'] = df['현재매출'].apply(format_currency)
@@ -1209,14 +1024,12 @@ if len(curr_date) == 2 and len(comp_date) == 2:
                         if 'device' in insight_data and not insight_data['device'].empty:
                             df = insight_data['device'].copy()
                             
-                            # 매출 비중 계산
                             total_revenue = df['현재매출'].sum()
                             if total_revenue > 0:
                                 df['매출비중'] = (df['현재매출'] / total_revenue * 100).round(1)
                             else:
                                 df['매출비중'] = 0
                             
-                            # 순위 추가
                             df.insert(0, '순위', range(1, len(df) + 1))
                             
                             df['현재매출'] = df['현재매출'].apply(format_currency)
