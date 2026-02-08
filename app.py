@@ -1,4 +1,4 @@
-# SIDIZ Dashboard v2.4 - Fan-out 중복 제거 + 정합성 복구 완료 버전
+# SIDIZ Dashboard v2.5 - 객단가 정합성 수정 완료 버전
 import streamlit as st
 from google.cloud import bigquery
 import pandas as pd
@@ -22,7 +22,7 @@ def get_bq_client():
 client = get_bq_client()
 
 # -------------------------------------------------
-# 2. 데이터 추출 함수 (수정 완료)
+# 2. 데이터 추출 함수 (객단가 수정)
 # -------------------------------------------------
 def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_source="온라인 단독"):
     if client is None:
@@ -86,11 +86,11 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
             COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
             COUNTIF(event_name = 'sign_up') as signups,
-            COUNTIF(event_name = 'purchase') as orders,
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN transaction_id END) as orders,
             SUM(IFNULL(purchase_revenue, 0)) as revenue,
-            COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN transaction_id END) as bulk_orders,
             SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
-            COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN transaction_id END) as filtered_orders,
             SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
         FROM base
         GROUP BY 1 
@@ -102,7 +102,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             CAST({group_sql} AS STRING) as period_label,
             COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions,
             SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue,
-            COUNTIF(event_name = 'purchase') as orders
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN ecommerce.transaction_id END) as orders
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
         GROUP BY 1 ORDER BY 1
@@ -180,11 +180,11 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
             COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
             COUNTIF(event_name = 'sign_up') as signups,
-            COUNTIF(event_name = 'purchase') as orders,
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN transaction_id END) as orders,
             SUM(IFNULL(purchase_revenue, 0)) as revenue,
-            COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN transaction_id END) as bulk_orders,
             SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
-            COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN transaction_id END) as filtered_orders,
             SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
         FROM base
         GROUP BY 1 
@@ -226,6 +226,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
                 e.user_pseudo_id,
                 e.event_name,
                 e.ecommerce.purchase_revenue,
+                e.ecommerce.transaction_id,
                 (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid
             FROM `sidiz-458301.analytics_487246344.events_*` e
             INNER JOIN filtered_sessions fs
@@ -237,7 +238,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             CAST(period_date AS STRING) as period_label,
             COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
             SUM(IFNULL(purchase_revenue, 0)) as revenue,
-            COUNTIF(event_name = 'purchase') as orders
+            COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN transaction_id END) as orders
         FROM base
         GROUP BY 1 ORDER BY 1
         """
@@ -710,9 +711,9 @@ with st.sidebar:
 
 if len(curr_date) == 2 and len(comp_date) == 2:
     if data_source == "온라인 단독":
-        st.info("🌐 **온라인 단독 모드** - 매장 QR로 시작하지 않은 세션만 집계 (중복 제거 완료)")
+        st.info("🌐 **온라인 단독 모드** - 매장 QR로 시작하지 않은 세션만 집계 (세션 시작 소스 기준)")
     elif data_source == "매장 단독":
-        st.info("🏪 **매장 단독 모드** - 매장 QR로 시작한 세션만 집계 (중복 제거 완료)")
+        st.info("🏪 **매장 단독 모드** - 매장 QR로 시작한 세션만 집계 (세션 시작 소스 기준)")
     else:
         st.info("📊 **전체 데이터 모드** - 모든 세션 집계")
     
@@ -776,7 +777,7 @@ if len(curr_date) == 2 and len(comp_date) == 2:
             bulk_detail_query = f"""
             SELECT 
                 item.item_name as product_name,
-                COUNT(DISTINCT event_timestamp) as order_count,
+                COUNT(DISTINCT ecommerce.transaction_id) as order_count,
                 SUM(item.quantity) as total_quantity,
                 SUM(item.price * item.quantity) as item_revenue
             FROM `sidiz-458301.analytics_487246344.events_*`,
