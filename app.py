@@ -47,46 +47,59 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     # 핵심 지표 쿼리 (.format() 방식으로 안전하게 변수 치환)
     if data_source == "온라인 단독":
         query = """
-    WITH base AS (
-        SELECT 
-            PARSE_DATE('%Y%m%d', event_date) as date,
-            user_pseudo_id, 
-            event_name, 
-            ecommerce.purchase_revenue, 
-            ecommerce.transaction_id,
-            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
-            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
-            items,
-            traffic_source.source as ts_source,
-            (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1) as ep_source,
-            collected_traffic_source.manual_source as cts_source
+    WITH store_sessions AS (
+        SELECT DISTINCT 
+            user_pseudo_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-    ),
-    non_store_events AS (
-        SELECT b.*
-        FROM base b
-        WHERE NOT (
-            LOWER(COALESCE(b.ts_source, '')) IN (
+        AND (
+            LOWER(COALESCE(traffic_source.source, '')) IN (
                 'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
                 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
                 'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
             ) OR
-            LOWER(COALESCE(b.ep_source, '')) IN (
+            LOWER(COALESCE(traffic_source.medium, '')) IN (
+                'qr_code', 'qr_coupon', 'qr_product'
+            ) OR
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
                 'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
                 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
                 'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
             ) OR
-            LOWER(COALESCE(b.cts_source, '')) IN (
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) IN (
+                'qr_code', 'qr_coupon', 'qr_product'
+            ) OR
+            LOWER(COALESCE(collected_traffic_source.manual_source, '')) IN (
                 'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
                 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
                 'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
+            ) OR
+            LOWER(COALESCE(collected_traffic_source.manual_medium, '')) IN (
+                'qr_code', 'qr_coupon', 'qr_product'
             )
         )
     ),
+    base AS (
+        SELECT 
+            PARSE_DATE('%Y%m%d', event_date) as date,
+            user_pseudo_id, event_name, ecommerce.purchase_revenue, ecommerce.transaction_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
+            items
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+    ),
+    filtered_base AS (
+        SELECT b.*
+        FROM base b
+        LEFT JOIN store_sessions ss 
+        ON b.user_pseudo_id = ss.user_pseudo_id AND b.sid = ss.sid
+        WHERE ss.sid IS NULL
+    ),
     easy_repair_only_orders AS (
         SELECT transaction_id
-        FROM non_store_events, UNNEST(items) as item
+        FROM filtered_base, UNNEST(items) as item
         WHERE event_name = 'purchase'
         GROUP BY transaction_id
         HAVING LOGICAL_AND(
@@ -107,52 +120,65 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
         COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
         SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
-    FROM non_store_events
+    FROM filtered_base
     GROUP BY 1 
     HAVING type IS NOT NULL
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
 
     elif data_source == "매장 단독":
         query = """
-    WITH base AS (
+    WITH store_sessions AS (
+        SELECT DISTINCT 
+            user_pseudo_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+        AND (
+            LOWER(COALESCE(traffic_source.source, '')) IN (
+                'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
+                'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
+                'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
+            ) OR
+            LOWER(COALESCE(traffic_source.medium, '')) IN (
+                'qr_code', 'qr_coupon', 'qr_product'
+            ) OR
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
+                'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
+                'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
+                'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
+            ) OR
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) IN (
+                'qr_code', 'qr_coupon', 'qr_product'
+            ) OR
+            LOWER(COALESCE(collected_traffic_source.manual_source, '')) IN (
+                'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
+                'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
+                'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
+            ) OR
+            LOWER(COALESCE(collected_traffic_source.manual_medium, '')) IN (
+                'qr_code', 'qr_coupon', 'qr_product'
+            )
+        )
+    ),
+    base AS (
         SELECT 
             PARSE_DATE('%Y%m%d', event_date) as date,
-            user_pseudo_id, 
-            event_name, 
-            ecommerce.purchase_revenue, 
-            ecommerce.transaction_id,
+            user_pseudo_id, event_name, ecommerce.purchase_revenue, ecommerce.transaction_id,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
-            items,
-            traffic_source.source as ts_source,
-            (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1) as ep_source,
-            collected_traffic_source.manual_source as cts_source
+            items
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
-    store_events AS (
+    store_base AS (
         SELECT b.*
         FROM base b
-        WHERE 
-            LOWER(COALESCE(b.ts_source, '')) IN (
-                'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
-                'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
-                'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
-            ) OR
-            LOWER(COALESCE(b.ep_source, '')) IN (
-                'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
-                'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
-                'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
-            ) OR
-            LOWER(COALESCE(b.cts_source, '')) IN (
-                'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
-                'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
-                'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
-            )
+        INNER JOIN store_sessions ss 
+        ON b.user_pseudo_id = ss.user_pseudo_id AND b.sid = ss.sid
     ),
     easy_repair_only_orders AS (
         SELECT transaction_id
-        FROM store_events, UNNEST(items) as item
+        FROM store_base, UNNEST(items) as item
         WHERE event_name = 'purchase'
         GROUP BY transaction_id
         HAVING LOGICAL_AND(
@@ -173,7 +199,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
         COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
         SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
-    FROM store_events
+    FROM store_base
     GROUP BY 1 
     HAVING type IS NOT NULL
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
