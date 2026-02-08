@@ -392,31 +392,47 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     max_date = max(e_c, e_p)
 
     # 제품별 매출 변화 (item_id 기준)
-    if data_source == "온라인 단독":
-        product_query = """
-        WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트: store 포함 모든 소스
-        SELECT DISTINCT 
-            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
+    product_query = """
+    WITH base AS (
+        SELECT 
+            PARSE_DATE('%Y%m%d', event_date) as date,
+            user_pseudo_id,
+            event_name,
+            ecommerce.purchase_revenue,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+            items
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-        AND (
-            -- traffic_source에서 'store' 포함
-            LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
+    ),
+    product_items AS (
+        SELECT 
+            b.date,
+            b.user_pseudo_id,
+            b.sid,
+            b.event_name,
+            item.item_id,
+            item.item_name,
+            item.price,
+            item.quantity
+        FROM base b, UNNEST(items) as item
+    ),
+    latest_product_names AS (
+        SELECT 
+            item_id as match_key,
+            ARRAY_AGG(item_name ORDER BY date DESC LIMIT 1)[OFFSET(0)] as product_name
         FROM product_items
         GROUP BY match_key
     ),
     product_metrics AS (
         SELECT 
-            match_key,
-            -- 현재 기간 매출 (핵심 성과 요약과 동일)
+            item_id as match_key,
+            -- 현재 기간 매출
             SUM(CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
                 AND event_name = 'purchase'
                 THEN COALESCE(price, 0) * COALESCE(quantity, 0)
                 ELSE 0
             END) as curr_rev,
-            
             -- 이전 기간 매출
             SUM(CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
@@ -424,18 +440,15 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
                 THEN COALESCE(price, 0) * COALESCE(quantity, 0)
                 ELSE 0
             END) as prev_rev,
-            
-            -- 세션 (핵심 성과 요약과 동일)
+            -- 세션
             COUNT(DISTINCT CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
                 THEN CONCAT(user_pseudo_id, CAST(sid AS STRING))
             END) as curr_sess,
-            
             COUNT(DISTINCT CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
                 THEN CONCAT(user_pseudo_id, CAST(sid AS STRING))
             END) as prev_sess,
-            
             -- 수량
             SUM(CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
@@ -443,7 +456,6 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
                 THEN COALESCE(quantity, 0)
                 ELSE 0
             END) as curr_qty,
-            
             SUM(CASE 
                 WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_p}') AND PARSE_DATE('%Y%m%d', '{e_p}')
                 AND event_name = 'purchase'
@@ -454,11 +466,11 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
         GROUP BY match_key
     )
     SELECT 
-        n.product_name,
-        m.curr_rev as current_revenue,
-        m.prev_rev as previous_revenue,
-        m.curr_rev - m.prev_rev as revenue_change,
-        ROUND(SAFE_DIVIDE((m.curr_rev - m.prev_rev) * 100, NULLIF(m.prev_rev, 0)), 1) as change_pct,
+        n.product_name as 제품명,
+        m.curr_rev as 현재매출,
+        m.prev_rev as 이전매출,
+        m.curr_rev - m.prev_rev as 매출변화,
+        ROUND(SAFE_DIVIDE((m.curr_rev - m.prev_rev) * 100, NULLIF(m.prev_rev, 0)), 1) as 증감율,
         m.curr_sess as current_sessions,
         m.prev_sess as previous_sessions,
         m.curr_qty as current_quantity,
@@ -469,7 +481,6 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     ORDER BY m.curr_rev DESC
     LIMIT 20
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c, s_p=s_p, e_p=e_p)
-
     # 채널별 매출 & 세션 변화 (통합 쿼리 - 단일 소스)
     channel_combined_query = """
     WITH base_events AS (
