@@ -290,14 +290,48 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
     if data_source == "온라인 단독":
         ts_query = """
         WITH store_sessions AS (
-            -- 매장 유입 세션 블랙리스트: store 포함 모든 소스
             SELECT DISTINCT 
                 CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
             AND (
-                -- traffic_source에서 'store' 포함
-                LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
+                LOWER(COALESCE(traffic_source.source, '')) IN (
+                    'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
+                    'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
+                    'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
+                ) OR
+                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
+                    'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
+                    'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
+                    'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
+                ) OR
+                LOWER(COALESCE(collected_traffic_source.manual_source, '')) IN (
+                    'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
+                    'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
+                    'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
+                )
+            )
+        ),
+        events_base AS (
+            SELECT 
+                {group_sql} as period_date,
+                user_pseudo_id,
+                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+                event_name,
+                ecommerce.purchase_revenue
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        )
+        SELECT 
+            CAST(period_date AS STRING) as period_label,
+            COUNT(DISTINCT CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING))) as sessions,
+            SUM(IFNULL(e.purchase_revenue, 0)) as revenue,
+            COUNTIF(e.event_name = 'purchase') as orders
+        FROM events_base e
+        WHERE CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING)) NOT IN (
+            SELECT session_key FROM store_sessions
+        )
+        GROUP BY 1 ORDER BY 1
         """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
     
     elif data_source == "매장 단독":
@@ -308,32 +342,21 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
             AND (
-                LOWER(traffic_source.source) IN (
-                'store_register_qr',
-                'qr_store_',
-                'qr_store_247482',
-                'qr_store_247483',
-                'qr_store_247488',
-                'qr_store_247476',
-                'qr_store_247474',
-                'qr_store_247486',
-                'qr_store_247489',
-                'qr_store_252941',
-                'qr_store_247475'
-            ) OR
-                LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN (
-                'store_register_qr',
-                'qr_store_',
-                'qr_store_247482',
-                'qr_store_247483',
-                'qr_store_247488',
-                'qr_store_247476',
-                'qr_store_247474',
-                'qr_store_247486',
-                'qr_store_247489',
-                'qr_store_252941',
-                'qr_store_247475'
-            )
+                LOWER(COALESCE(traffic_source.source, '')) IN (
+                    'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
+                    'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
+                    'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
+                ) OR
+                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
+                    'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
+                    'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
+                    'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
+                ) OR
+                LOWER(COALESCE(collected_traffic_source.manual_source, '')) IN (
+                    'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483',
+                    'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486',
+                    'qr_store_247489', 'qr_store_252941', 'qr_store_247475'
+                )
             )
         ),
         events_base AS (
@@ -355,9 +378,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         WHERE CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING)) IN (
             SELECT session_key FROM store_sessions
         )
-        GROUP BY 1 ORDER BY 1
-        """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
-    
     else:
         ts_query = """
         SELECT 
