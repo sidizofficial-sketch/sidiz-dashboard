@@ -24,150 +24,427 @@ client = get_bq_client()
 # -------------------------------------------------
 # 2. 데이터 추출 함수 (EASY REPAIR 필터링 포함)
 # -------------------------------------------------
-
-def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="시디즈닷컴 (매장 제외)"):
-    if client is None: return None, None
+def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="온라인 단독"):
+    if client is None:
+        return None, None
     
-    # 1. 날짜 및 변수 설정
-    s_c, e_c = start_c.strftime('%Y%m%d'), end_c.strftime('%Y%m%d')
-    s_p, e_p = start_p.strftime('%Y%m%d'), end_p.strftime('%Y%m%d')
-    min_date, max_date = min(s_c, s_p), max(e_c, e_p)
+    # 날짜 변수 미리 변환 (f-string 충돌 방지)
+    s_c = start_c.strftime('%Y%m%d')
+    e_c = end_c.strftime('%Y%m%d')
+    s_p = start_p.strftime('%Y%m%d')
+    e_p = end_p.strftime('%Y%m%d')
+    
+    min_date = min(s_c, s_p)
+    max_date = max(e_c, e_p)
 
-    base_date_expr = "PARSE_DATE('%Y%m%d', event_date)"
-    if time_unit == "주별": group_sql = f"DATE_TRUNC({base_date_expr}, WEEK)"
-    elif time_unit == "월별": group_sql = f"DATE_TRUNC({base_date_expr}, MONTH)"
-    else: group_sql = base_date_expr
+    if time_unit == "일별":
+        group_sql = "PARSE_DATE('%Y%m%d', event_date)"
+    elif time_unit == "주별":
+        group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), WEEK)"
+    else:
+        group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
 
-    # 매장 소스 리스트 (루커스튜디오 기준)
-    store_srcs = "'store_register_qr', 'qr_store_', 'qr_store_247482', 'qr_store_247483', 'qr_store_247488', 'qr_store_247476', 'qr_store_247474', 'qr_store_247486', 'qr_store_247489', 'qr_store_252941', 'qr_store_247475'"
-    store_meds = "'qr_code', 'qr_coupon', 'qr_product'"
-
-    # 2. 데이터 소스 필터 결정 (에러 방지를 위해 변수로 처리)
-    if data_source == "매장 전용":
-        source_filter = "WHERE sid IN (SELECT sid FROM store_sessions)"
-    elif data_source == "시디즈닷컴 (매장 제외)":
-        source_filter = "WHERE sid NOT IN (SELECT sid FROM store_sessions)"
-    else: # 전체 데이터
-        source_filter = ""
-
-    # 3. 메인 지표 쿼리 (통합형)
-    query = f"""
-    WITH base AS (
+    # 핵심 지표 쿼리 (.format() 방식으로 안전하게 변수 치환)
+    if data_source == "온라인 단독":
+        # 매장 데이터 제외 모드
+        query = """
+    WITH store_sessions AS (
+        -- 매장 유입 세션 블랙리스트: 11개 매장 QR 코드 + medium 필터
+        SELECT DISTINCT 
+            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+        AND (
+            -- traffic_source.source
+            LOWER(COALESCE(traffic_source.source, '')) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            ) OR
+            -- traffic_source.medium
+            LOWER(COALESCE(traffic_source.medium, '')) IN (
+                'qr_code',
+                'qr_coupon',
+                'qr_product'
+            ) OR
+            -- event_params의 source
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            ) OR
+            -- event_params의 medium
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) IN (
+                'qr_code',
+                'qr_coupon',
+                'qr_product'
+            ) OR
+            -- collected_traffic_source.manual_source
+            LOWER(COALESCE(collected_traffic_source.manual_source, '')) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            ) OR
+            -- collected_traffic_source.manual_medium
+            LOWER(COALESCE(collected_traffic_source.manual_medium, '')) IN (
+                'qr_code',
+                'qr_coupon',
+                'qr_product'
+            )
+        )
+    ),
+    base AS (
         SELECT 
             PARSE_DATE('%Y%m%d', event_date) as date,
-            user_pseudo_id as uid,
-            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as sid,
-            event_name,
-            IFNULL(ecommerce.purchase_revenue, 0) as rev,
-            ecommerce.transaction_id as tid,
+            user_pseudo_id, event_name, ecommerce.purchase_revenue, ecommerce.transaction_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
             (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
-            FIRST_VALUE(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source))) 
-                OVER (PARTITION BY user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) ORDER BY event_timestamp ASC) as s_src,
-            FIRST_VALUE(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium))) 
-                OVER (PARTITION BY user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) ORDER BY event_timestamp ASC) as s_med
+            items
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
-    store_sessions AS (
-        SELECT DISTINCT sid FROM base
-        WHERE s_src IN ({store_srcs}) AND s_med IN ({store_meds})
+    filtered_base AS (
+        -- 매장 세션 제외 (session_key 기반)
+        SELECT b.*
+        FROM base b
+        WHERE CONCAT(b.user_pseudo_id, CAST(b.sid AS STRING)) NOT IN (
+            SELECT session_key FROM store_sessions
+        )
+    ),
+    easy_repair_only_orders AS (
+        SELECT transaction_id
+        FROM filtered_base, UNNEST(items) as item
+        WHERE event_name = 'purchase'
+        GROUP BY transaction_id
+        HAVING LOGICAL_AND(
+            REGEXP_CONTAINS(UPPER(IFNULL(item.item_category, '')), r'EASY.REPAIR') OR 
+            REGEXP_CONTAINS(UPPER(IFNULL(item.item_name, '')), r'EASY.REPAIR') OR
+            REGEXP_CONTAINS(item.item_name, r'패드|헤드레스트|커버|다리|바퀴|글라이드|블록|좌판|이지리페어')
+        )
     )
     SELECT 
         CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
-        COUNT(DISTINCT uid) as users,
-        COUNT(DISTINCT CASE WHEN s_num = 1 THEN uid END) as new_users,
-        COUNT(DISTINCT sid) as sessions,
+        COUNT(DISTINCT user_pseudo_id) as users,
+        COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
+        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
         COUNTIF(event_name = 'sign_up') as signups,
-        COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN tid END) as orders,
-        SUM(CASE WHEN event_name = 'purchase' THEN rev ELSE 0 END) as revenue,
-        COUNT(DISTINCT CASE WHEN event_name = 'purchase' AND rev >= 1500000 THEN tid END) as bulk_orders,
-        SUM(CASE WHEN event_name = 'purchase' AND rev >= 1500000 THEN rev ELSE 0 END) as bulk_revenue,
-        SUM(CASE WHEN event_name = 'purchase' THEN rev ELSE 0 END) as filtered_revenue
-    FROM base
-    {source_filter}
-    GROUP BY 1 HAVING type IS NOT NULL
-    """
-
-    # 4. 시계열 쿼리 (ts_query)
-    group_sql_fixed = group_sql.replace("PARSE_DATE('%Y%m%d', event_date)", "date")
-    ts_query = f"""
+        COUNTIF(event_name = 'purchase') as orders,
+        SUM(IFNULL(purchase_revenue, 0)) as revenue,
+        COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
+        SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
+        COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
+        SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
+    FROM filtered_base
+    GROUP BY 1 
+    HAVING type IS NOT NULL
+    """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
+    
+    elif data_source == "매장 단독":
+        # 매장 데이터만 보기 모드
+        query = """
+    WITH store_sessions AS (
+        -- 매장 유입 세션: 11개 매장 QR 코드 + medium 필터
+        SELECT DISTINCT 
+            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+        AND (
+            -- traffic_source.source
+            LOWER(COALESCE(traffic_source.source, '')) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            ) OR
+            -- traffic_source.medium
+            LOWER(COALESCE(traffic_source.medium, '')) IN (
+                'qr_code',
+                'qr_coupon',
+                'qr_product'
+            ) OR
+            -- event_params의 source
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            ) OR
+            -- event_params의 medium
+            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) IN (
+                'qr_code',
+                'qr_coupon',
+                'qr_product'
+            ) OR
+            -- collected_traffic_source.manual_source
+            LOWER(COALESCE(collected_traffic_source.manual_source, '')) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            ) OR
+            -- collected_traffic_source.manual_medium
+            LOWER(COALESCE(collected_traffic_source.manual_medium, '')) IN (
+                'qr_code',
+                'qr_coupon',
+                'qr_product'
+            )
+        )
+    ),
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            )
+        )
+    ),
+    base AS (
+        SELECT 
+            PARSE_DATE('%Y%m%d', event_date) as date,
+            user_pseudo_id, event_name, ecommerce.purchase_revenue, ecommerce.transaction_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
+            items
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+    ),
+    store_only_base AS (
+        -- 매장 세션만 포함 (session_key 기반)
+        SELECT b.*
+        FROM base b
+        WHERE CONCAT(b.user_pseudo_id, CAST(b.sid AS STRING)) IN (
+            SELECT session_key FROM store_sessions
+        )
+    ),
+    easy_repair_only_orders AS (
+        SELECT transaction_id
+        FROM store_only_base, UNNEST(items) as item
+        WHERE event_name = 'purchase'
+        GROUP BY transaction_id
+        HAVING LOGICAL_AND(
+            REGEXP_CONTAINS(UPPER(IFNULL(item.item_category, '')), r'EASY.REPAIR') OR 
+            REGEXP_CONTAINS(UPPER(IFNULL(item.item_name, '')), r'EASY.REPAIR') OR
+            REGEXP_CONTAINS(item.item_name, r'패드|헤드레스트|커버|다리|바퀴|글라이드|블록|좌판|이지리페어')
+        )
+    )
+    SELECT 
+        CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
+        COUNT(DISTINCT user_pseudo_id) as users,
+        COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
+        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
+        COUNTIF(event_name = 'sign_up') as signups,
+        COUNTIF(event_name = 'purchase') as orders,
+        SUM(IFNULL(purchase_revenue, 0)) as revenue,
+        COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
+        SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
+        COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
+        SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
+    FROM store_only_base
+    GROUP BY 1 
+    HAVING type IS NOT NULL
+    """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
+    
+    else:
+        # 전체 데이터 모드
+        query = """
     WITH base AS (
         SELECT 
             PARSE_DATE('%Y%m%d', event_date) as date,
-            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as sid,
-            event_name,
-            IFNULL(ecommerce.purchase_revenue, 0) as rev,
-            ecommerce.transaction_id as tid,
-            FIRST_VALUE(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source))) 
-                OVER (PARTITION BY user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) ORDER BY event_timestamp ASC) as s_src,
-            FIRST_VALUE(LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), traffic_source.medium))) 
-                OVER (PARTITION BY user_pseudo_id, (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) ORDER BY event_timestamp ASC) as s_med
+            user_pseudo_id, event_name, ecommerce.purchase_revenue, ecommerce.transaction_id,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
+            items
         FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
     ),
-    store_sessions AS (
-        SELECT DISTINCT sid FROM base
-        WHERE s_src IN ({store_srcs}) AND s_med IN ({store_meds})
+    easy_repair_only_orders AS (
+        SELECT transaction_id
+        FROM base, UNNEST(items) as item
+        WHERE event_name = 'purchase'
+        GROUP BY transaction_id
+        HAVING LOGICAL_AND(
+            REGEXP_CONTAINS(UPPER(IFNULL(item.item_category, '')), r'EASY.REPAIR') OR 
+            REGEXP_CONTAINS(UPPER(IFNULL(item.item_name, '')), r'EASY.REPAIR') OR
+            REGEXP_CONTAINS(item.item_name, r'패드|헤드레스트|커버|다리|바퀴|글라이드|블록|좌판|이지리페어')
+        )
     )
     SELECT 
-        CAST({group_sql_fixed} AS STRING) as period_label,
-        COUNT(DISTINCT sid) as sessions,
-        SUM(CASE WHEN event_name = 'purchase' THEN rev ELSE 0 END) as revenue,
-        COUNT(DISTINCT CASE WHEN event_name = 'purchase' THEN tid END) as orders
+        CASE WHEN date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
+        COUNT(DISTINCT user_pseudo_id) as users,
+        COUNT(DISTINCT CASE WHEN s_num = 1 THEN user_pseudo_id END) as new_users,
+        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST(sid AS STRING))) as sessions,
+        COUNTIF(event_name = 'sign_up') as signups,
+        COUNTIF(event_name = 'purchase') as orders,
+        SUM(IFNULL(purchase_revenue, 0)) as revenue,
+        COUNTIF(event_name = 'purchase' AND purchase_revenue >= 1500000) as bulk_orders,
+        SUM(CASE WHEN event_name = 'purchase' AND purchase_revenue >= 1500000 THEN purchase_revenue ELSE 0 END) as bulk_revenue,
+        COUNTIF(event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders)) as filtered_orders,
+        SUM(CASE WHEN event_name = 'purchase' AND transaction_id NOT IN (SELECT transaction_id FROM easy_repair_only_orders) THEN purchase_revenue ELSE 0 END) as filtered_revenue
     FROM base
-    {source_filter}
-    {'AND' if source_filter else 'WHERE'} date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}')
-    GROUP BY 1 ORDER BY 1
-    """
+    GROUP BY 1 
+    HAVING type IS NOT NULL
+    """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
 
-    # 5. 실행 및 반환
-    try:
-        df_metrics = client.query(query).to_dataframe()
-        df_ts = client.query(ts_query).to_dataframe()
-        return df_metrics, df_ts
-    except Exception as e:
-        import streamlit as st
-        st.error(f"⚠️ 데이터 로드 중 오류: {e}")
-        return None, None
-        
-    # --- 2. 시디즈닷컴 (매장 제외) ---
-    elif data_source == "시디즈닷컴 (매장 제외)":
-        query = """
-        WITH base AS (
-            SELECT PARSE_DATE('%Y%m%d', event_date) as date, user_pseudo_id, 
-            CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as sid,
-            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
-            event_name, ecommerce.purchase_revenue, ecommerce.transaction_id,
-            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), traffic_source.source)) as src
-            FROM `sidiz-458301.analytics_487246344.events_*` WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+    # 시계열 데이터
+    if data_source == "온라인 단독":
+        ts_query = """
+        WITH store_sessions AS (
+            -- 매장 유입 세션 블랙리스트: store 포함 모든 소스
+            SELECT DISTINCT 
+                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+            AND (
+                -- traffic_source에서 'store' 포함
+                LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
+                LOWER(COALESCE(traffic_source.medium, '')) LIKE '%store%' OR
+                -- event_params에서 'store' 포함
+                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) LIKE '%store%' OR
+                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) LIKE '%store%' OR
+                -- collected_traffic_source에서 'store' 포함
+                LOWER(COALESCE(collected_traffic_source.manual_source, '')) LIKE '%store%' OR
+                LOWER(COALESCE(collected_traffic_source.manual_medium, '')) LIKE '%store%'
+            )
         ),
-        store_sid AS (SELECT sid FROM base WHERE src LIKE '%store%' GROUP BY sid)
-        SELECT CASE WHEN b.date BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
-        COUNT(DISTINCT b.user_pseudo_id) as users, COUNT(DISTINCT CASE WHEN b.s_num = 1 THEN b.user_pseudo_id END) as new_users,
-        COUNT(DISTINCT b.sid) as sessions, COUNTIF(b.event_name = 'sign_up') as signups, COUNT(DISTINCT b.transaction_id) as orders,
-        SUM(IFNULL(b.purchase_revenue, 0)) as revenue, COUNT(DISTINCT CASE WHEN b.purchase_revenue >= 1500000 THEN b.transaction_id END) as bulk_orders,
-        SUM(CASE WHEN b.purchase_revenue >= 1500000 THEN b.purchase_revenue ELSE 0 END) as bulk_revenue, SUM(IFNULL(b.purchase_revenue, 0)) as filtered_revenue
-        FROM base b LEFT JOIN store_sid s ON b.sid = s.sid WHERE s.sid IS NULL GROUP BY 1 HAVING type IS NOT NULL
-        """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
-        ts_query = """SELECT CAST({group_sql} AS STRING) as period_label, COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions, SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue, COUNTIF(event_name = 'purchase') as orders FROM `sidiz-458301.analytics_487246344.events_*` WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' GROUP BY 1 ORDER BY 1""".format(s_c=s_c, e_c=e_c, group_sql=group_sql)
-
-    # --- 3. 전체 데이터 ---
+        events_base AS (
+            SELECT 
+                {group_sql} as period_date,
+                user_pseudo_id,
+                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+                event_name,
+                ecommerce.purchase_revenue
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        )
+        SELECT 
+            CAST(period_date AS STRING) as period_label,
+            COUNT(DISTINCT CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING))) as sessions,
+            SUM(IFNULL(e.purchase_revenue, 0)) as revenue,
+            COUNTIF(e.event_name = 'purchase') as orders
+        FROM events_base e
+        WHERE CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING)) NOT IN (
+            SELECT session_key FROM store_sessions
+        )
+        GROUP BY 1 ORDER BY 1
+        """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
+    
+    elif data_source == "매장 단독":
+        ts_query = """
+        WITH store_sessions AS (
+            SELECT DISTINCT 
+                CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+            AND (
+                LOWER(traffic_source.source) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            ) OR
+                LOWER((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)) IN (
+                'store_register_qr',
+                'qr_store_',
+                'qr_store_247482',
+                'qr_store_247483',
+                'qr_store_247488',
+                'qr_store_247476',
+                'qr_store_247474',
+                'qr_store_247486',
+                'qr_store_247489',
+                'qr_store_252941',
+                'qr_store_247475'
+            )
+            )
+        ),
+        events_base AS (
+            SELECT 
+                {group_sql} as period_date,
+                user_pseudo_id,
+                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
+                event_name,
+                ecommerce.purchase_revenue
+            FROM `sidiz-458301.analytics_487246344.events_*`
+            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        )
+        SELECT 
+            CAST(period_date AS STRING) as period_label,
+            COUNT(DISTINCT CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING))) as sessions,
+            SUM(IFNULL(e.purchase_revenue, 0)) as revenue,
+            COUNTIF(e.event_name = 'purchase') as orders
+        FROM events_base e
+        WHERE CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING)) IN (
+            SELECT session_key FROM store_sessions
+        )
+        GROUP BY 1 ORDER BY 1
+        """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
+    
     else:
-        query = """
-        SELECT CASE WHEN PARSE_DATE('%Y%m%d', event_date) BETWEEN PARSE_DATE('%Y%m%d', '{s_c}') AND PARSE_DATE('%Y%m%d', '{e_c}') THEN 'Current' ELSE 'Previous' END as type,
-        COUNT(DISTINCT user_pseudo_id) as users, COUNT(DISTINCT CASE WHEN (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_number' LIMIT 1) = 1 THEN user_pseudo_id END) as new_users,
-        COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions,
-        COUNTIF(event_name = 'sign_up') as signups, COUNT(DISTINCT ecommerce.transaction_id) as orders, SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue,
-        COUNT(DISTINCT CASE WHEN ecommerce.purchase_revenue >= 1500000 THEN ecommerce.transaction_id END) as bulk_orders,
-        SUM(CASE WHEN ecommerce.purchase_revenue >= 1500000 THEN ecommerce.purchase_revenue ELSE 0 END) as bulk_revenue, SUM(IFNULL(ecommerce.purchase_revenue, 0)) as filtered_revenue
-        FROM `sidiz-458301.analytics_487246344.events_*` WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}' GROUP BY 1 HAVING type IS NOT NULL
-        """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
-        ts_query = """SELECT CAST({group_sql} AS STRING) as period_label, COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions, SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue, COUNTIF(event_name = 'purchase') as orders FROM `sidiz-458301.analytics_487246344.events_*` WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}' GROUP BY 1 ORDER BY 1""".format(s_c=s_c, e_c=e_c, group_sql=group_sql)
-
+        ts_query = f"""
+        SELECT 
+            CAST({group_sql} AS STRING) as period_label, 
+            COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions,
+            SUM(IFNULL(ecommerce.purchase_revenue, 0)) as revenue,
+            COUNTIF(event_name = 'purchase') as orders
+        FROM `sidiz-458301.analytics_487246344.events_*`
+        WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+        GROUP BY 1 ORDER BY 1
+        """
     try:
-        df_metrics = client.query(query).to_dataframe()
-        df_ts = client.query(ts_query).to_dataframe()
-        return df_metrics, df_ts
+        return client.query(query).to_dataframe(), client.query(ts_query).to_dataframe()
     except Exception as e:
         st.error(f"⚠️ 쿼리 오류: {e}")
         return None, None
@@ -175,7 +452,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
 # -------------------------------------------------
 # 3. 인사이트 데이터 추출 (TOP3 + 증감율)
 # -------------------------------------------------
-def get_insight_data(start_c, end_c, start_p, end_p, data_source="시디즈닷컴 (매장 제외)"):
+def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단독"):
     if client is None:
         return None
     
@@ -189,7 +466,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="시디즈닷�
     max_date = max(e_c, e_p)
 
     # 제품별 매출 변화 (item_id 기준)
-    if data_source == "시디즈닷컴 (매장 제외)":
+    if data_source == "온라인 단독":
         product_query = """
         WITH store_sessions AS (
         -- 매장 유입 세션 블랙리스트: store 포함 모든 소스
@@ -724,9 +1001,9 @@ with st.sidebar:
     # 데이터 소스 선택 (3가지 옵션)
     data_source = st.selectbox(
         "📊 데이터 소스",
-        options=["시디즈닷컴 (매장 제외)", "전체", "매장 전용"],
-        index=0,  # 기본값: 시디즈닷컴 (매장 제외)
-        help="시디즈닷컴: 온라인 전용 | 전체: 모든 데이터 | 매장 전용: 매장 QR 유입만"
+        options=["온라인 단독", "전체", "매장 단독"],
+        index=0,  # 기본값: 온라인 단독
+        help="온라인 단독: 매장 제외 | 전체: 모든 데이터 | 매장 단독: 매장 QR만"
     )
     
     # 날짜 입력
@@ -737,10 +1014,10 @@ with st.sidebar:
 
 if len(curr_date) == 2 and len(comp_date) == 2:
     # 데이터 소스 상태 표시
-    if data_source == "시디즈닷컴 (매장 제외)":
-        st.info("🌐 시디즈닷컴 모드 - 온라인 전용 데이터만 표시됩니다")
-    elif data_source == "매장 전용":
-        st.info("🏪 매장 전용 모드 - 매장 QR 유입 데이터만 표시됩니다")
+    if data_source == "온라인 단독":
+        st.info("🌐 온라인 단독 모드 - 매장 데이터 제외")
+    elif data_source == "매장 단독":
+        st.info("🏪 매장 단독 모드 - 매장 QR 유입만")
     
     summary_df, ts_df = get_dashboard_data(
         curr_date[0], curr_date[1], 
