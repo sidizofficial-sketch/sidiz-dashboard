@@ -378,6 +378,9 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="ì
         WHERE CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING)) IN (
             SELECT session_key FROM store_sessions
         )
+        GROUP BY 1 ORDER BY 1
+        """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
+    
     else:
         ts_query = """
         SELECT 
