@@ -433,7 +433,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="ì
         """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
     
     else:
-        ts_query = f"""
+        ts_query = """
         SELECT 
             CAST({group_sql} AS STRING) as period_label, 
             COUNT(DISTINCT CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING))) as sessions,
@@ -442,7 +442,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="ì
         FROM `sidiz-458301.analytics_487246344.events_*`
         WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
         GROUP BY 1 ORDER BY 1
-        """
+        """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
     try:
         return client.query(query).to_dataframe(), client.query(ts_query).to_dataframe()
     except Exception as e:
