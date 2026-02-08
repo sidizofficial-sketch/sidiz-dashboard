@@ -1,4 +1,4 @@
-# SIDIZ Dashboard v2.2 - NameError 해결 완료 버전
+# SIDIZ Dashboard v2.3 - Fan-out 중복 제거 완료 버전
 import streamlit as st
 from google.cloud import bigquery
 import pandas as pd
@@ -22,7 +22,7 @@ def get_bq_client():
 client = get_bq_client()
 
 # -------------------------------------------------
-# 2. 데이터 추출 함수 (EASY REPAIR 필터링 포함)
+# 2. 데이터 추출 함수 (Fan-out 중복 제거 적용)
 # -------------------------------------------------
 def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_source="온라인 단독"):
     if client is None:
@@ -46,7 +46,14 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
     else:
         group_sql = "PARSE_DATE('%Y%m%d', event_date)"
     
-    # 전체 모드: 이전 버전처럼 단순하게
+    # 매장 소스 리스트 (공통)
+    store_sources = """('qr_store_247486', 'qr_store_247482', 'qr_store_252941', 'qr_store_247476',
+                         'store_register_qr', 'qr_store_247483', 'qr_store_247488', 'qr_store_247474',
+                         'qr_store_247489', 'qr_store_247475', 'qr_store_247485', 'qr_store_')"""
+    
+    # ========================================
+    # 전체 모드 (기존 유지)
+    # ========================================
     if data_source == "전체":
         query = """
         WITH base AS (
@@ -101,10 +108,12 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
         GROUP BY 1 ORDER BY 1
         """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
     
-    # 매장 단독 모드: 세션 시작 소스 기준
+    # ========================================
+    # 매장 단독 모드 (🔥 중복 제거 수정)
+    # ========================================
     elif data_source == "매장 단독":
-        query = """
-        WITH session_first_source AS (
+        query = f"""
+        WITH session_first_source_raw AS (
             SELECT 
                 user_pseudo_id,
                 (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
@@ -119,13 +128,21 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         ),
+        session_first_source AS (
+            SELECT 
+                user_pseudo_id,
+                sid,
+                ANY_VALUE(first_source) as first_source
+            FROM session_first_source_raw
+            GROUP BY user_pseudo_id, sid
+        ),
         base AS (
             SELECT 
-                PARSE_DATE('%Y%m%d', event_date) as date,
+                PARSE_DATE('%Y%m%d', e.event_date) as date,
                 e.user_pseudo_id,
                 e.event_name,
-                ecommerce.purchase_revenue,
-                ecommerce.transaction_id,
+                e.ecommerce.purchase_revenue,
+                e.ecommerce.transaction_id,
                 (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
                 (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
                 e.items,
@@ -134,12 +151,8 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             INNER JOIN session_first_source sfs 
             ON e.user_pseudo_id = sfs.user_pseudo_id 
             AND (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) = sfs.sid
-            WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-            AND sfs.first_source IN (
-                'qr_store_247486', 'qr_store_247482', 'qr_store_252941', 'qr_store_247476',
-                'store_register_qr', 'qr_store_247483', 'qr_store_247488', 'qr_store_247474',
-                'qr_store_247489', 'qr_store_247475', 'qr_store_247485', 'qr_store_'
-            )
+            WHERE e._TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+            AND sfs.first_source IN {store_sources}
         ),
         easy_repair_only_orders AS (
             SELECT transaction_id
@@ -167,10 +180,10 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
         FROM base
         GROUP BY 1 
         HAVING type IS NOT NULL
-        """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
+        """
         
-        ts_query = """
-        WITH session_first_source AS (
+        ts_query = f"""
+        WITH session_first_source_raw AS (
             SELECT 
                 user_pseudo_id,
                 (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
@@ -185,23 +198,27 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
         ),
+        session_first_source AS (
+            SELECT 
+                user_pseudo_id,
+                sid,
+                ANY_VALUE(first_source) as first_source
+            FROM session_first_source_raw
+            GROUP BY user_pseudo_id, sid
+        ),
         base AS (
             SELECT 
                 {group_sql} as period_date,
                 e.user_pseudo_id,
                 e.event_name,
-                ecommerce.purchase_revenue,
+                e.ecommerce.purchase_revenue,
                 (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid
             FROM `sidiz-458301.analytics_487246344.events_*` e
             INNER JOIN session_first_source sfs 
             ON e.user_pseudo_id = sfs.user_pseudo_id 
             AND (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) = sfs.sid
-            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-            AND sfs.first_source IN (
-                'qr_store_247486', 'qr_store_247482', 'qr_store_252941', 'qr_store_247476',
-                'store_register_qr', 'qr_store_247483', 'qr_store_247488', 'qr_store_247474',
-                'qr_store_247489', 'qr_store_247475', 'qr_store_247485', 'qr_store_'
-            )
+            WHERE e._TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+            AND sfs.first_source IN {store_sources}
         )
         SELECT 
             CAST(period_date AS STRING) as period_label,
@@ -210,12 +227,14 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             COUNTIF(event_name = 'purchase') as orders
         FROM base
         GROUP BY 1 ORDER BY 1
-        """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
+        """
     
-    # 온라인 단독: 세션 시작 소스 기준 (매장이 아닌 세션)
+    # ========================================
+    # 온라인 단독 모드 (🔥 중복 제거 수정)
+    # ========================================
     else:  # data_source == "온라인 단독"
-        query = """
-        WITH session_first_source AS (
+        query = f"""
+        WITH session_first_source_raw AS (
             SELECT 
                 user_pseudo_id,
                 (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
@@ -230,13 +249,21 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
         ),
+        session_first_source AS (
+            SELECT 
+                user_pseudo_id,
+                sid,
+                ANY_VALUE(first_source) as first_source
+            FROM session_first_source_raw
+            GROUP BY user_pseudo_id, sid
+        ),
         base AS (
             SELECT 
-                PARSE_DATE('%Y%m%d', event_date) as date,
+                PARSE_DATE('%Y%m%d', e.event_date) as date,
                 e.user_pseudo_id,
                 e.event_name,
-                ecommerce.purchase_revenue,
-                ecommerce.transaction_id,
+                e.ecommerce.purchase_revenue,
+                e.ecommerce.transaction_id,
                 (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
                 (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_number' LIMIT 1) as s_num,
                 e.items,
@@ -245,12 +272,8 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             LEFT JOIN session_first_source sfs 
             ON e.user_pseudo_id = sfs.user_pseudo_id 
             AND (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) = sfs.sid
-            WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-            AND (sfs.first_source IS NULL OR sfs.first_source NOT IN (
-                'qr_store_247486', 'qr_store_247482', 'qr_store_252941', 'qr_store_247476',
-                'store_register_qr', 'qr_store_247483', 'qr_store_247488', 'qr_store_247474',
-                'qr_store_247489', 'qr_store_247475', 'qr_store_247485', 'qr_store_'
-            ))
+            WHERE e._TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
+            AND (sfs.first_source IS NULL OR sfs.first_source NOT IN {store_sources})
         ),
         easy_repair_only_orders AS (
             SELECT transaction_id
@@ -278,10 +301,10 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
         FROM base
         GROUP BY 1 
         HAVING type IS NOT NULL
-        """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c)
+        """
         
-        ts_query = """
-        WITH session_first_source AS (
+        ts_query = f"""
+        WITH session_first_source_raw AS (
             SELECT 
                 user_pseudo_id,
                 (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
@@ -296,23 +319,27 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             FROM `sidiz-458301.analytics_487246344.events_*`
             WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
         ),
+        session_first_source AS (
+            SELECT 
+                user_pseudo_id,
+                sid,
+                ANY_VALUE(first_source) as first_source
+            FROM session_first_source_raw
+            GROUP BY user_pseudo_id, sid
+        ),
         base AS (
             SELECT 
                 {group_sql} as period_date,
                 e.user_pseudo_id,
                 e.event_name,
-                ecommerce.purchase_revenue,
+                e.ecommerce.purchase_revenue,
                 (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid
             FROM `sidiz-458301.analytics_487246344.events_*` e
             LEFT JOIN session_first_source sfs 
             ON e.user_pseudo_id = sfs.user_pseudo_id 
             AND (SELECT value.int_value FROM UNNEST(e.event_params) WHERE key = 'ga_session_id' LIMIT 1) = sfs.sid
-            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-            AND (sfs.first_source IS NULL OR sfs.first_source NOT IN (
-                'qr_store_247486', 'qr_store_247482', 'qr_store_252941', 'qr_store_247476',
-                'store_register_qr', 'qr_store_247483', 'qr_store_247488', 'qr_store_247474',
-                'qr_store_247489', 'qr_store_247475', 'qr_store_247485', 'qr_store_'
-            ))
+            WHERE e._TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
+            AND (sfs.first_source IS NULL OR sfs.first_source NOT IN {store_sources})
         )
         SELECT 
             CAST(period_date AS STRING) as period_label,
@@ -321,9 +348,8 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
             COUNTIF(event_name = 'purchase') as orders
         FROM base
         GROUP BY 1 ORDER BY 1
-        """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
+        """
 
-    # 온라인 단독: 세션 시작 소스 기준 (매장이 아닌 세션)
     try:
         return client.query(query).to_dataframe(), client.query(ts_query).to_dataframe()
     except Exception as e:
@@ -434,6 +460,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     ORDER BY m.curr_rev DESC
     LIMIT 20
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c, s_p=s_p, e_p=e_p)
+    
     channel_combined_query = """
     WITH base_events AS (
         SELECT 
@@ -507,6 +534,7 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
     ORDER BY ABS(IFNULL(current_revenue - previous_revenue, 0)) DESC
     LIMIT 10
     """.format(min_date=min_date, max_date=max_date, s_c=s_c, e_c=e_c, s_p=s_p, e_p=e_p)
+    
     demo_query = """
     WITH current_demo AS (
         SELECT CONCAT(IFNULL(geo.country, 'Unknown'), ' / ', IFNULL(geo.city, 'Unknown')) as location, SUM(ecommerce.purchase_revenue) as revenue 
@@ -839,15 +867,17 @@ with st.sidebar:
 if len(curr_date) == 2 and len(comp_date) == 2:
     # 데이터 소스 상태 표시
     if data_source == "온라인 단독":
-        st.info("🌐 **온라인 단독 모드** - 매장 QR로 시작하지 않은 세션의 데이터만 표시 (세션 시작 소스 기준)")
+        st.info("🌐 **온라인 단독 모드** - 매장 QR로 시작하지 않은 세션의 데이터만 표시 (세션 시작 소스 기준, Fan-out 중복 제거 완료)")
     elif data_source == "매장 단독":
-        st.info("🏪 **매장 유입 세션 기준 (Session Start Attribution)** - 매장 QR을 통해 쇼핑을 시작한 모든 세션의 매출을 집계합니다. 결제 직전에 소스가 변경되더라도 세션 시작점인 매장의 기여도를 인정한 기준입니다 (₩56,688,000).")
+        st.info("🏪 **매장 유입 세션 기준 (Session Start Attribution)** - 매장 QR을 통해 쇼핑을 시작한 모든 세션의 매출을 집계합니다. (Fan-out 중복 제거 완료)")
+    else:
+        st.info("📊 **전체 데이터 모드** - 모든 세션의 데이터를 표시합니다.")
     
     summary_df, ts_df = get_dashboard_data(
         curr_date[0], curr_date[1], 
         comp_date[0], comp_date[1], 
         time_unit, 
-        data_source  # exclude_store 대신 data_source 전달
+        data_source
     )
     
     if summary_df is not None and not summary_df.empty:
