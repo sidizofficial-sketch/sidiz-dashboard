@@ -43,6 +43,8 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, group_by='daily', data_so
         group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), WEEK)"
     elif group_by == 'monthly':
         group_sql = "DATE_TRUNC(PARSE_DATE('%Y%m%d', event_date), MONTH)"
+    else:
+        group_sql = "PARSE_DATE('%Y%m%d', event_date)"  # 기본값: daily
     
     # 핵심 지표 쿼리 - is_store 플래그로 통합
     query = """
