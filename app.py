@@ -49,7 +49,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         # 매장 데이터 제외 모드
         query = """
     WITH store_sessions AS (
-        -- 매장 유입 세션 블랙리스트: 11개 매장 QR 코드 + medium 필터
+        -- 매장 유입 세션 블랙리스트: 11개 매장 QR 코드 (source만)
         SELECT DISTINCT 
             CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
         FROM `sidiz-458301.analytics_487246344.events_*`
@@ -69,12 +69,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
                 'qr_store_252941',
                 'qr_store_247475'
             ) OR
-            -- traffic_source.medium
-            LOWER(COALESCE(traffic_source.medium, '')) IN (
-                'qr_code',
-                'qr_coupon',
-                'qr_product'
-            ) OR
             -- event_params의 source
             LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
                 'store_register_qr',
@@ -89,12 +83,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
                 'qr_store_252941',
                 'qr_store_247475'
             ) OR
-            -- event_params의 medium
-            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) IN (
-                'qr_code',
-                'qr_coupon',
-                'qr_product'
-            ) OR
             -- collected_traffic_source.manual_source
             LOWER(COALESCE(collected_traffic_source.manual_source, '')) IN (
                 'store_register_qr',
@@ -108,12 +96,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
                 'qr_store_247489',
                 'qr_store_252941',
                 'qr_store_247475'
-            ) OR
-            -- collected_traffic_source.manual_medium
-            LOWER(COALESCE(collected_traffic_source.manual_medium, '')) IN (
-                'qr_code',
-                'qr_coupon',
-                'qr_product'
             )
         )
     ),
@@ -167,7 +149,7 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
         # 매장 데이터만 보기 모드
         query = """
     WITH store_sessions AS (
-        -- 매장 유입 세션: 11개 매장 QR 코드 + medium 필터
+        -- 매장 유입 세션: 11개 매장 QR 코드 (source만)
         SELECT DISTINCT 
             CONCAT(user_pseudo_id, CAST((SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) AS STRING)) as session_key
         FROM `sidiz-458301.analytics_487246344.events_*`
@@ -187,12 +169,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
                 'qr_store_252941',
                 'qr_store_247475'
             ) OR
-            -- traffic_source.medium
-            LOWER(COALESCE(traffic_source.medium, '')) IN (
-                'qr_code',
-                'qr_coupon',
-                'qr_product'
-            ) OR
             -- event_params의 source
             LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) IN (
                 'store_register_qr',
@@ -207,12 +183,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
                 'qr_store_252941',
                 'qr_store_247475'
             ) OR
-            -- event_params의 medium
-            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) IN (
-                'qr_code',
-                'qr_coupon',
-                'qr_product'
-            ) OR
             -- collected_traffic_source.manual_source
             LOWER(COALESCE(collected_traffic_source.manual_source, '')) IN (
                 'store_register_qr',
@@ -226,12 +196,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
                 'qr_store_247489',
                 'qr_store_252941',
                 'qr_store_247475'
-            ) OR
-            -- collected_traffic_source.manual_medium
-            LOWER(COALESCE(collected_traffic_source.manual_medium, '')) IN (
-                'qr_code',
-                'qr_coupon',
-                'qr_product'
             )
         )
     ),
@@ -334,35 +298,6 @@ def get_dashboard_data(start_c, end_c, start_p, end_p, time_unit, data_source="�
             AND (
                 -- traffic_source에서 'store' 포함
                 LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
-                LOWER(COALESCE(traffic_source.medium, '')) LIKE '%store%' OR
-                -- event_params에서 'store' 포함
-                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) LIKE '%store%' OR
-                LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) LIKE '%store%' OR
-                -- collected_traffic_source에서 'store' 포함
-                LOWER(COALESCE(collected_traffic_source.manual_source, '')) LIKE '%store%' OR
-                LOWER(COALESCE(collected_traffic_source.manual_medium, '')) LIKE '%store%'
-            )
-        ),
-        events_base AS (
-            SELECT 
-                {group_sql} as period_date,
-                user_pseudo_id,
-                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
-                event_name,
-                ecommerce.purchase_revenue
-            FROM `sidiz-458301.analytics_487246344.events_*`
-            WHERE _TABLE_SUFFIX BETWEEN '{s_c}' AND '{e_c}'
-        )
-        SELECT 
-            CAST(period_date AS STRING) as period_label,
-            COUNT(DISTINCT CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING))) as sessions,
-            SUM(IFNULL(e.purchase_revenue, 0)) as revenue,
-            COUNTIF(e.event_name = 'purchase') as orders
-        FROM events_base e
-        WHERE CONCAT(e.user_pseudo_id, CAST(e.sid AS STRING)) NOT IN (
-            SELECT session_key FROM store_sessions
-        )
-        GROUP BY 1 ORDER BY 1
         """.format(s_c=s_c, e_c=e_c, group_sql=group_sql)
     
     elif data_source == "매장 단독":
@@ -468,75 +403,6 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
         AND (
             -- traffic_source에서 'store' 포함
             LOWER(COALESCE(traffic_source.source, '')) LIKE '%store%' OR
-            LOWER(COALESCE(traffic_source.medium, '')) LIKE '%store%' OR
-            -- event_params에서 'store' 포함
-            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1), '')) LIKE '%store%' OR
-            LOWER(COALESCE((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1), '')) LIKE '%store%' OR
-            -- collected_traffic_source에서 'store' 포함
-            LOWER(COALESCE(collected_traffic_source.manual_source, '')) LIKE '%store%' OR
-            LOWER(COALESCE(collected_traffic_source.manual_medium, '')) LIKE '%store%'
-        )
-    ),
-    base AS (
-        SELECT 
-            PARSE_DATE('%Y%m%d', event_date) as date,
-            user_pseudo_id,
-            event_name,
-            ecommerce.purchase_revenue,
-            (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
-            items
-        FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-    ),
-    filtered_base AS (
-        -- 매장 세션 제외 (session_key 기반)
-        SELECT b.*
-        FROM base b
-        WHERE CONCAT(b.user_pseudo_id, CAST(b.sid AS STRING)) NOT IN (
-            SELECT session_key FROM store_sessions
-        )
-    ),
-        """
-    else:
-        product_query = """
-        WITH base AS (
-            SELECT 
-                PARSE_DATE('%Y%m%d', event_date) as date,
-                user_pseudo_id,
-                event_name,
-                ecommerce.purchase_revenue,
-                (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'ga_session_id' LIMIT 1) as sid,
-                items
-            FROM `sidiz-458301.analytics_487246344.events_*`
-            WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-        ),
-        """
-    
-    product_query += """
-    product_items AS (
-        SELECT 
-            date,
-            user_pseudo_id,
-            event_name,
-            sid,
-            -- item_id 기준 (없으면 정규화된 이름)
-            COALESCE(
-                item.item_id,
-                REGEXP_REPLACE(
-                    UPPER(TRIM(REGEXP_REPLACE(item.item_name, r'\\[.*?\\]', ''))),
-                    r'\\s+|[^A-Z0-9가-힣]', ''
-                )
-            ) as match_key,
-            item.item_name as original_name,
-            item.price,
-            item.quantity
-        FROM """ + ("filtered_base" if exclude_store else "base") + """, UNNEST(items) as item
-        WHERE item.item_name IS NOT NULL
-    ),
-    latest_product_names AS (
-        SELECT 
-            match_key,
-            ARRAY_AGG(original_name ORDER BY date DESC LIMIT 1)[OFFSET(0)] as product_name
         FROM product_items
         GROUP BY match_key
     ),
@@ -614,25 +480,6 @@ def get_insight_data(start_c, end_c, start_p, end_p, data_source="온라인 단�
             ecommerce.purchase_revenue,
             -- 이벤트 파라미터에서만 소스/매체 추출 (traffic_source 사용 중단)
             LOWER(NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'source' LIMIT 1)), '')) as raw_source,
-            LOWER(NULLIF(TRIM((SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'medium' LIMIT 1)), '')) as raw_medium,
-            event_timestamp,
-            _TABLE_SUFFIX as suffix
-        FROM `sidiz-458301.analytics_487246344.events_*`
-        WHERE _TABLE_SUFFIX BETWEEN '{min_date}' AND '{max_date}'
-        
-    ),
-    session_mapping AS (
-        SELECT 
-            user_pseudo_id,
-            session_id,
-            suffix,
-            event_name,
-            purchase_revenue,
-            -- 세션 내에서 NULL이 아닌 첫 번째 소스 값을 찾아 전파 (IGNORE NULLS)
-            COALESCE(
-                FIRST_VALUE(raw_source IGNORE NULLS) OVER (
-                    PARTITION BY user_pseudo_id, session_id 
-                    ORDER BY event_timestamp 
                     ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
                 ),
                 '(direct)'
